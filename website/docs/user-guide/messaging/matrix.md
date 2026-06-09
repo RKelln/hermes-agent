@@ -379,6 +379,25 @@ See also: [admin/user slash command split](../../reference/slash-commands.md#per
 To find a Room ID: in Element, go to the room → **Settings** → **Advanced** → the **Internal room ID** is shown there (starts with `!`).
 :::
 
+## Platform hint suffix (`platform_hint_suffix`)
+
+Append custom formatting rules to the built-in system prompt hint for a platform. Hermes injects platform-specific guidance (formatting rules, media delivery, linebreak conventions) into every session. `platform_hint_suffix` lets you add your own rules on top, per platform.
+
+This key works for **any platform** with a built-in hint (Matrix, Telegram, Discord, Slack, etc.) — just place it under the platform's config section.
+
+```yaml
+matrix:
+  platform_hint_suffix: |-
+    Also remember: always use emoji reactions for acknowledgment.
+    Never reference "bot" — the bridge shows as RyBot.
+
+telegram:
+  platform_hint_suffix: |-
+    Always reply in the user's language.
+```
+
+The suffix is appended after the built-in hint in every session. Leave unset (default) for no additional guidance.
+
 ## Commands in Matrix
 
 Hermes supports the same gateway commands in Matrix that it supports on other
