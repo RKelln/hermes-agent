@@ -864,7 +864,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 run_metadata: Optional[dict] = None):
     """
     Mark a job as having been run.
     
@@ -873,6 +874,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``run_metadata`` is optional runtime statistics for monitoring — a dict
+    with keys like ``duration_seconds`` (float) and ``tokens`` (dict of
+    token-type → count).  Stored as ``last_run_metadata`` on the job record
+    and appended to ``run_history`` (last 20 runs retained).
     """
     with _jobs_file_lock:
         jobs = load_jobs()
@@ -884,6 +890,27 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+
+                # Store run-time statistics for monitoring and cost tracking
+                if run_metadata:
+                    job["last_run_metadata"] = run_metadata
+                    # Maintain a rolling history of the last 20 runs
+                    run_history = job.get("run_history")
+                    if not isinstance(run_history, list):
+                        run_history = []
+                    entry = {
+                        "time": now,
+                        "success": success,
+                        **run_metadata,
+                    }
+                    run_history.append(entry)
+                    # Keep only the last 20 entries to bound storage
+                    if len(run_history) > 20:
+                        run_history = run_history[-20:]
+                    job["run_history"] = run_history
+                elif run_metadata is not None:
+                    # Explicitly cleared (empty dict passed)
+                    job.pop("last_run_metadata", None)
                 
                 # Increment completed count
                 if job.get("repeat"):

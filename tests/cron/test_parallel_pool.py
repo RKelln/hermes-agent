@@ -117,7 +117,7 @@ class TestSyncMode:
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: jobs)
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
-        monkeypatch.setattr(sched, "run_job", lambda j: (True, "out", "resp", None))
+        monkeypatch.setattr(sched, "run_job", lambda j: (True, "out", "resp", None, None))
         monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: "/tmp/out")
         monkeypatch.setattr(sched, "mark_job_run", lambda *_a, **_kw: None)
         monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
@@ -149,7 +149,7 @@ class TestSyncMode:
 
         def slow_run(j):
             barrier.wait()  # blocks until test thread also waits
-            return True, "out", "resp", None
+            return True, "out", "resp", None, None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
@@ -203,7 +203,7 @@ class TestSequentialPool:
 
         def slow_run(j):
             barrier.wait()
-            return True, "out", "resp", None
+            return True, "out", "resp", None, None
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
