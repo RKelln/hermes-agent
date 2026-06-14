@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1303,12 +1304,45 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def _build_run_stats_section(
+    elapsed_seconds: float,
+    tokens: dict[str, int],
+) -> str:
+    """Build a `## Run Statistics` markdown section for cron output docs."""
+    lines = ["## Run Statistics", ""]
+    lines.append(f"**Elapsed:** {elapsed_seconds:.1f}s")
+    total = tokens.get("total_tokens")
+    if total:
+        lines.append(f"**Input tokens:** {tokens.get('input_tokens', 0):,}")
+        lines.append(f"**Output tokens:** {tokens.get('output_tokens', 0):,}")
+        if tokens.get("prompt_tokens"):
+            lines.append(f"**Prompt tokens:** {tokens['prompt_tokens']:,}")
+        if tokens.get("completion_tokens"):
+            lines.append(f"**Completion tokens:** {tokens['completion_tokens']:,}")
+        lines.append(f"**Total tokens:** {total:,}")
+        if tokens.get("cache_read_tokens"):
+            lines.append(f"**Cache read tokens:** {tokens['cache_read_tokens']:,}")
+        if tokens.get("cache_write_tokens"):
+            lines.append(f"**Cache write tokens:** {tokens['cache_write_tokens']:,}")
+        if tokens.get("reasoning_tokens"):
+            lines.append(f"**Reasoning tokens:** {tokens['reasoning_tokens']:,}")
+    elif elapsed_seconds < 2.0:
+        lines.append("**Tokens:** — (no API calls completed)")
+    else:
+        lines.append("**Tokens:** — (not collected)")
+    return "\n".join(lines) + "\n"
+
+
+def run_job(job: dict) -> tuple[bool, str, str, Optional[str], Optional[dict]]:
     """
     Execute a single cron job.
     
     Returns:
-        Tuple of (success, full_output_doc, final_response, error_message)
+        Tuple of (success, full_output_doc, final_response, error, run_metadata)
+        
+        run_metadata is a dict with ``duration_seconds`` (float) and
+        ``tokens`` (dict token-type → count), or None when not applicable
+        (e.g. script-only jobs, prompt injection blocked, etc.).
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
@@ -1336,7 +1370,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if not script_path:
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
-            return False, "", "", err
+            return False, "", "", err, None
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -1351,7 +1385,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
+            _no_agent_start = time.time()
             ok, output = _run_job_script(script_path)
+            _no_agent_elapsed = round(time.time() - _no_agent_start, 1)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -1374,11 +1410,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
+                f"**Elapsed:** {_no_agent_elapsed:.1f}s\n"
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** script failed\n\n"
                 f"{output}\n"
             )
-            return False, doc, alert, output
+            return False, doc, alert, output, None
 
         # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
         # means "nothing to report this tick", same as empty stdout.
@@ -1390,10 +1427,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
+                f"**Elapsed:** {_no_agent_elapsed:.1f}s\n"
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -1401,20 +1439,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
+                f"**Elapsed:** {_no_agent_elapsed:.1f}s\n"
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
         doc = (
             f"# Cron Job: {job_name}\n\n"
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {now_iso}\n"
+            f"**Elapsed:** {_no_agent_elapsed:.1f}s\n"
             f"**Mode:** no_agent (script)\n\n"
             f"---\n\n"
             f"{output}\n"
         )
-        return True, doc, output, None
+        return True, doc, output, None, None
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
@@ -1453,7 +1493,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)
@@ -1479,10 +1519,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
-        return False, blocked_doc, "", str(block_exc)
+        return False, blocked_doc, "", str(block_exc), None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        return True, "", SILENT_MARKER, None, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -1561,6 +1601,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
+        _job_start: Optional[float] = None  # init: set before agent runs
         from dotenv import load_dotenv
         try:
             load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
@@ -1785,6 +1826,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _job_start = time.time()
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — just wait for the result.
@@ -1850,6 +1892,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
             )
 
+        # ── Collect run-time metrics: wall-clock duration and token usage ──
+        # Token data is already present in the run_conversation result dict
+        # (populated by turn_finalizer from agent.session_* counters).
+        _job_elapsed = round(time.time() - _job_start, 1)
+        _token_keys = (
+            "input_tokens", "output_tokens", "total_tokens",
+            "prompt_tokens", "completion_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        )
+        _job_tokens: dict[str, int] = {}
+        for _key in _token_keys:
+            _val = result.get(_key, 0)
+            if _val:
+                _job_tokens[_key] = int(_val)
+        _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens)
+
         # If the agent itself reported failure (e.g. all retries exhausted on
         # API errors, model abort, mid-run interrupt), do not silently mark the
         # job as successful. run_agent populates `failed=True`/`completed=False`
@@ -1879,6 +1937,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
+{_stats_section}
 ## Prompt
 
 {prompt}
@@ -1889,18 +1948,41 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
-        return True, output, final_response, None
+        _success_metadata = {
+            "duration_seconds": _job_elapsed,
+            "tokens": _job_tokens,
+        }
+        return True, output, final_response, None, _success_metadata
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+
+        # ── Collect run stats for failure output (best-effort) ──
+        _fail_elapsed: Optional[float] = None
+        _fail_tokens: dict[str, int] = {}
+        if _job_start is not None:
+            _fail_elapsed = round(time.time() - _job_start, 1)
+            # Gather partial token data from the agent object (if it was constructed).
+            # On the success path we read from result dict; on failure the result
+            # dict may not exist so we fall back to the agent's session counters.
+            if agent is not None:
+                for _field in ("session_total_tokens", "session_input_tokens", "session_output_tokens"):
+                    _val = getattr(agent, _field, 0)
+                    if _val:
+                        _fail_tokens[_field.replace("session_", "")] = int(_val)
+        _fail_stats = (
+            _build_run_stats_section(_fail_elapsed, _fail_tokens)
+            if _fail_elapsed is not None
+            else ""
+        )
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-
+{_fail_stats}
 ## Prompt
 
 {prompt}
@@ -1911,7 +1993,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 {error_msg}
 ```
 """
-        return False, output, "", error_msg
+        _fail_metadata = None
+        if _fail_elapsed is not None:
+            _fail_metadata = {"duration_seconds": _fail_elapsed, "tokens": _fail_tokens}
+        return False, output, "", error_msg, _fail_metadata
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
@@ -2047,7 +2132,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, run_metadata = run_job(job)
 
                 output_file = save_job_output(job["id"], output)
                 if verbose:
@@ -2080,7 +2165,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error,
+                             run_metadata=run_metadata)
                 return True
 
             except Exception as e:

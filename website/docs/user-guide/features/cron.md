@@ -220,8 +220,9 @@ On each tick Hermes:
 3. starts a fresh `AIAgent` session for each due job
 4. optionally injects one or more attached skills into that fresh session
 5. runs the prompt to completion
-6. delivers the final response
-7. updates run metadata and the next scheduled time
+7. delivers the final response
+8. updates `last_run_metadata` (elapsed time and token breakdown), appends to
+   `run_history` (last 20 runs), and advances the next scheduled time
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
