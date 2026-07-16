@@ -454,6 +454,7 @@ def finalize_turn(
         "prompt_tokens": agent.session_prompt_tokens,
         "completion_tokens": agent.session_completion_tokens,
         "total_tokens": agent.session_total_tokens,
+        "blocked_calls": dict(getattr(agent, "session_blocked_calls", {})),
         "last_prompt_tokens": getattr(agent.context_compressor, "last_prompt_tokens", 0) or 0,
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,

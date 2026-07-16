@@ -1998,6 +1998,7 @@ def init_agent(
     agent.session_completion_tokens = 0
     agent.session_total_tokens = 0
     agent.session_api_calls = 0
+    agent.session_blocked_calls = {}   # tool_name → count
     agent.session_input_tokens = 0
     agent.session_output_tokens = 0
     agent.session_cache_read_tokens = 0

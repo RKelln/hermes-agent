@@ -1496,6 +1496,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_request_middleware_trace=list(middleware_trace),
                 )
                 _spinner_result = function_result
+                if function_result and function_result.strip().startswith('{"error"') and (
+                    '"BLOCKED"' in function_result or '"denied"' in function_result
+                ):
+                    agent.session_blocked_calls[function_name] = agent.session_blocked_calls.get(function_name, 0) + 1
             except KeyboardInterrupt:
                 function_result = _emit_cancelled_terminal_post_tool_call(
                     agent,
@@ -1537,6 +1541,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                     tool_request_middleware_trace=list(middleware_trace),
                 )
+                if function_result and function_result.strip().startswith('{"error"') and (
+                    '"BLOCKED"' in function_result or '"denied"' in function_result
+                ):
+                    agent.session_blocked_calls[function_name] = agent.session_blocked_calls.get(function_name, 0) + 1
             except KeyboardInterrupt:
                 _emit_cancelled_terminal_post_tool_call(
                     agent,
