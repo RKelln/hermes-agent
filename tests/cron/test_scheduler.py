@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _build_run_stats_section
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -985,11 +985,11 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert "ok" in output
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -1042,7 +1042,7 @@ class TestRunJobSessionPersistence:
                 AIAgent._format_turn_completion_explanation
             )
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         # The explainer is stripped to empty inside run_job; the downstream
         # firing body (process_job) then suppresses delivery and marks the run
@@ -1082,9 +1082,9 @@ class TestRunJobSessionPersistence:
                 AIAgent._format_turn_completion_explanation
             )
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
-        assert final_response == "Daily report: 4 PRs merged."
+        assert final_response.startswith("Daily report: 4 PRs merged.")
         assert success is True
 
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
@@ -1155,7 +1155,7 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.side_effect = RuntimeError("boom")
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is False
         assert final_response == ""
@@ -1194,7 +1194,7 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, _output, _final_response, _error = run_job(job)
+            success, _output, _final_response, _error, _meta = run_job(job)
 
         assert success is True
         cleanup_mock.assert_called_once()
@@ -1361,7 +1361,7 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = {"final_response": ""}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -1437,7 +1437,7 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = agent_result
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is False
         assert final_response == ""
@@ -1480,11 +1480,11 @@ class TestRunJobSessionPersistence:
             }
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "all good"
+        assert final_response.startswith("all good")
 
     def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
         """Cron should deliver a usable max-iteration fallback summary.
@@ -1525,11 +1525,11 @@ class TestRunJobSessionPersistence:
             }
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "final fallback report"
+        assert final_response.startswith("final fallback report")
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
@@ -1578,7 +1578,7 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler.mark_job_run") as mock_mark, \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
+              patch("cron.scheduler.run_job", return_value=(True, "output", "", None, None)):
             tick(verbose=False)
 
         # Should be called with success=False because final_response is empty
@@ -1627,11 +1627,11 @@ class TestRunJobSessionPersistence:
                  },
              ), \
              patch("run_agent.AIAgent", FakeAgent):
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert "ok" in output
         assert seen == {
             "platform": "telegram",
@@ -1691,11 +1691,11 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler.concurrent.futures.wait", side_effect=wait_results), \
              patch("cron.scheduler.time.monotonic", side_effect=monotonic_ticks.__next__), \
              patch("cron.scheduler.heartbeat_run_claim", return_value=True) as heartbeat:
-            success, _output, final_response, error = run_job(job)
+            success, _output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         heartbeat.assert_called_once_with(
             "heartbeat-job", expected_owner="owner-token"
         )
@@ -1740,7 +1740,7 @@ class TestRunJobSessionPersistence:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _output, _final, error = run_job(job)
+            success, _output, _final, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -1798,10 +1798,10 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent", FakeAgent):
             for job in jobs:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, meta = run_job(job)
                 assert success is True
                 assert error is None
-                assert final_response == "ok"
+                assert final_response.startswith("ok")
                 assert "ok" in output
 
         assert seen == [
@@ -1926,7 +1926,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -1961,7 +1961,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -2051,7 +2051,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         kwargs = mock_agent_cls.call_args.kwargs
@@ -2096,7 +2096,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -2121,7 +2121,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -2154,7 +2154,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
@@ -2175,7 +2175,7 @@ class TestRunJobModelResolution:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is False
         assert error is not None
@@ -2235,7 +2235,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -2266,7 +2266,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         assert success is True
         assert error is None
@@ -2291,7 +2291,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
+            success, _, _, error, meta = run_job(job)
 
         # Explicit job model survives the corrupt-config fall-through.
         assert success is True
@@ -2344,13 +2344,13 @@ class TestRunJobSkillBacked:
             mock_agent_cls.return_value = mock_agent
 
             try:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, meta = run_job(job)
             finally:
                 clear_env_passthrough()
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
 
     def test_run_job_preserves_credential_file_passthrough_into_worker_thread(self, tmp_path):
         """copy_context() also propagates credential_files ContextVar."""
@@ -2405,13 +2405,13 @@ class TestRunJobSkillBacked:
             mock_agent_cls.return_value = mock_agent
 
             try:
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, meta = run_job(job)
             finally:
                 clear_credential_files()
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
 
     def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
         job = {
@@ -2443,11 +2443,11 @@ class TestRunJobSkillBacked:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert "cronjob" in (kwargs["disabled_toolsets"] or [])
@@ -2490,11 +2490,11 @@ class TestRunJobSkillBacked:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, meta = run_job(job)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert skill_view_mock.call_count == 2
         assert [call.args[0] for call in skill_view_mock.call_args_list] == ["blogwatcher", "maps"]
 
@@ -2518,7 +2518,7 @@ class TestSilentDelivery:
 
     def test_silent_response_suppresses_delivery(self, caplog):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2530,7 +2530,7 @@ class TestSilentDelivery:
 
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2542,7 +2542,7 @@ class TestSilentDelivery:
         """Agent appended [SILENT] after explanation text — must still suppress."""
         response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2552,7 +2552,7 @@ class TestSilentDelivery:
 
     def test_silent_is_case_insensitive(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2566,7 +2566,7 @@ class TestSilentDelivery:
         from cron.scheduler import tick
         for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
             with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None, None)), \
                  patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
                  patch("cron.scheduler._deliver_result") as deliver_mock, \
                  patch("cron.scheduler.mark_job_run"):
@@ -2578,7 +2578,7 @@ class TestSilentDelivery:
         be delivered — the old substring check wrongly swallowed it."""
         response = "I considered staying [SILENT] but here is the summary: 3 items merged."
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2609,7 +2609,7 @@ class TestSilentDelivery:
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2619,7 +2619,7 @@ class TestSilentDelivery:
 
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None, None)), \
              patch("cron.scheduler.save_job_output") as save_mock, \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2632,7 +2632,7 @@ class TestSilentDelivery:
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):
         """Whitespace-only final responses should behave like empty responses."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run") as mark_mock:
@@ -2645,6 +2645,7 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            run_metadata=None,
         )
 
 
@@ -2831,7 +2832,7 @@ class TestRunJobWakeGate:
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            success, doc, final, err, meta = scheduler.run_job(self._make_job())
 
         assert success is True
         assert err is None
@@ -2852,7 +2853,7 @@ class TestRunJobWakeGate:
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, script_output)), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            success, doc, final, err, meta = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()
         # The script output should be visible in the prompt passed to
@@ -2899,7 +2900,7 @@ class TestRunJobWakeGate:
         with patch.object(scheduler, "_run_job_script",
                           return_value=(False, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            success, doc, final, err, meta = scheduler.run_job(self._make_job())
 
         agent_cls.assert_called_once()  # Agent DID wake despite the gate-like text
 
@@ -3117,7 +3118,7 @@ class TestParallelTick:
             call_order.append(("start", job["id"]))
             barrier.wait()  # blocks until both threads reach here
             call_order.append(("end", job["id"]))
-            return (True, "output", "response", None)
+            return (True, "output", "response", None, None)
 
         jobs = [
             {"id": "job-a", "name": "a", "deliver": "local"},
@@ -3160,7 +3161,7 @@ class TestParallelTick:
             chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
             seen[job["id"]] = {"platform": platform, "chat_id": chat_id}
             clear_session_vars(tokens)
-            return (True, "output", "response", None)
+            return (True, "output", "response", None, None)
 
         jobs = [
             {"id": "tg-job", "name": "tg", "deliver": "local",
@@ -3191,7 +3192,7 @@ class TestParallelTick:
             call_times.append(("start", job["id"], time.monotonic()))
             time.sleep(0.05)
             call_times.append(("end", job["id"], time.monotonic()))
-            return (True, "output", "response", None)
+            return (True, "output", "response", None, None)
 
         jobs = [
             {"id": "s1", "name": "s1", "deliver": "local"},
@@ -4887,3 +4888,55 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+
+class TestBuildRunStatsSection:
+    def test_all_keys_emitted_including_zeroes(self):
+        """All canonical token keys are always stored (including zeros) for
+        a stable schema, even though zero-valued fields are omitted from the
+        compact display line."""
+        tokens = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        section = _build_run_stats_section(10.5, tokens)
+        assert "### Run Statistics" in section
+        assert "10.5s" in section
+        assert "150 tok" in section
+        assert "in:100" in section
+        assert "out:50" in section
+        assert "cached" not in section
+        assert "reason" not in section
+
+    def test_cache_read_shown_when_nonzero(self):
+        tokens = {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300,
+                  "cache_read_tokens": 5000}
+        section = _build_run_stats_section(2.0, tokens)
+        assert "5k cached" in section
+
+    def test_reasoning_shown_when_nonzero(self):
+        tokens = {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300,
+                  "reasoning_tokens": 1200}
+        section = _build_run_stats_section(2.0, tokens)
+        assert "1.2k reason" in section
+
+    def test_human_tok(self):
+        from cron.scheduler import _human_tok
+        assert _human_tok(0) == "0"
+        assert _human_tok(500) == "500"
+        assert _human_tok(1500) == "1.5k"
+        assert _human_tok(15044) == "15k"
+        assert _human_tok(1000) == "1k"
+        assert _human_tok(5000) == "5k"
+        assert _human_tok(1_500_000) == "1.5M"
+
+    def test_section_ends_with_newline(self):
+        section = _build_run_stats_section(1.0, {"total_tokens": 42})
+        assert section.endswith("\n")
+

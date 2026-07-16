@@ -47,7 +47,7 @@ def _base_job(**overrides):
 def _run_with_current_provider(job, current_provider, tmp_path):
     """Drive run_job with resolve_runtime_provider pinned to ``current_provider``.
 
-    Returns (success, output, final_response, error, agent_constructed).
+    Returns (success, output, final_response, error, metadata, agent_constructed).
     """
     fake_db = MagicMock()
     with patch("cron.scheduler._hermes_home", tmp_path), \
@@ -69,22 +69,22 @@ def _run_with_current_provider(job, current_provider, tmp_path):
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         mock_agent_cls.return_value = mock_agent
 
-        success, output, final_response, error = run_job(job)
+        success, output, final_response, error, meta = run_job(job)
         agent_constructed = mock_agent_cls.called
 
-    return success, output, final_response, error, agent_constructed
+    return success, output, final_response, error, meta, agent_constructed
 
 
 class TestProviderDriftGuard:
     def test_a_unpinned_snapshot_matches_runs_normally(self, tmp_path):
         """(a) Unpinned job whose snapshot == current provider → runs normally."""
         job = _base_job(provider_snapshot="openrouter")
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider(job, "openrouter", tmp_path)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert agent_constructed is True
 
     def test_b_unpinned_snapshot_differs_fails_closed(self, tmp_path):
@@ -94,7 +94,7 @@ class TestProviderDriftGuard:
         delivered error must name both providers and tell the user to pin.
         """
         job = _base_job(provider_snapshot="openrouter")
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider(job, "nous", tmp_path)
 
         # Fail closed: no agent constructed, no inference call.
@@ -119,7 +119,7 @@ class TestProviderDriftGuard:
         # A job dict that predates the field entirely (key absent, not None).
         job = _base_job()
         job.pop("provider_snapshot", None)
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider(job, "nous", tmp_path)
 
         assert success is True
@@ -129,7 +129,7 @@ class TestProviderDriftGuard:
     def test_c2_snapshot_none_runs_backcompat(self, tmp_path):
         """(c') Job with provider_snapshot explicitly None → runs (back-compat)."""
         job = _base_job(provider_snapshot=None)
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider(job, "nous", tmp_path)
 
         assert success is True
@@ -146,7 +146,7 @@ class TestProviderDriftGuard:
         job = _base_job(provider="openrouter", provider_snapshot="anthropic")
         # Current resolution differs from the (stale) snapshot, but the job is
         # pinned, so the guard must not engage.
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider(job, "nous", tmp_path)
 
         assert success is True
@@ -269,9 +269,9 @@ def _run_with_current_provider_and_model(job, current_provider, current_model, t
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         mock_agent_cls.return_value = mock_agent
-        success, output, final_response, error = run_job(job)
+        success, output, final_response, error, meta = run_job(job)
         agent_constructed = mock_agent_cls.called
-    return success, output, final_response, error, agent_constructed
+    return success, output, final_response, error, meta, agent_constructed
 
 
 class TestModelDriftGuard:
@@ -286,7 +286,7 @@ class TestModelDriftGuard:
             provider_snapshot="openrouter",
             model_snapshot="llama-3.3-70b-instruct:free",
         )
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider_and_model(
                 job, "openrouter", "claude-fable-5", tmp_path
             )
@@ -303,7 +303,7 @@ class TestModelDriftGuard:
             provider_snapshot="openrouter",
             model_snapshot="llama-3.3-70b-instruct:free",
         )
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider_and_model(
                 job, "openrouter", "llama-3.3-70b-instruct:free", tmp_path
             )
@@ -318,7 +318,7 @@ class TestModelDriftGuard:
             model_snapshot="old-model",
             model="my-pinned-model",
         )
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider_and_model(
                 job, "openrouter", "claude-fable-5", tmp_path
             )
@@ -328,7 +328,7 @@ class TestModelDriftGuard:
     def test_no_model_snapshot_backcompat(self, tmp_path):
         # Pre-existing job without model_snapshot → no model-drift skip.
         job = _base_job(provider_snapshot="openrouter")  # no model_snapshot key set to a value
-        success, output, final_response, error, agent_constructed = \
+        success, output, final_response, error, meta, agent_constructed = \
             _run_with_current_provider_and_model(
                 job, "openrouter", "claude-fable-5", tmp_path
             )
