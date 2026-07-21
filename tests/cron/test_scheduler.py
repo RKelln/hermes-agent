@@ -4911,20 +4911,48 @@ class TestBuildRunStatsSection:
         assert "150 tok" in section
         assert "in:100" in section
         assert "out:50" in section
-        assert "cached" not in section
-        assert "reason" not in section
+        assert "cache" not in section
+        assert "think" not in section
 
     def test_cache_read_shown_when_nonzero(self):
-        tokens = {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300,
+        tokens = {"input_tokens": 20000, "output_tokens": 100, "total_tokens": 20100,
                   "cache_read_tokens": 5000}
         section = _build_run_stats_section(2.0, tokens)
-        assert "5k cached" in section
+        assert "5k=25% cache" in section
 
     def test_reasoning_shown_when_nonzero(self):
-        tokens = {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300,
+        tokens = {"input_tokens": 200, "output_tokens": 10000, "total_tokens": 10200,
                   "reasoning_tokens": 1200}
         section = _build_run_stats_section(2.0, tokens)
-        assert "1.2k reason" in section
+        assert "1.2k=12% think" in section
+
+    def test_cache_over_100_percent_shown_unclamped(self):
+        """Cache reads can exceed input tokens across turns (prompt caching
+        spans multiple requests).  The percentage is not capped."""
+        tokens = {"input_tokens": 5000, "output_tokens": 2000, "total_tokens": 7000,
+                  "cache_read_tokens": 15000}
+        section = _build_run_stats_section(1.0, tokens)
+        assert "15k=300% cache" in section
+
+    def test_reasoning_over_100_percent_shown_unclamped(self):
+        tokens = {"input_tokens": 5000, "output_tokens": 2000, "total_tokens": 7000,
+                  "reasoning_tokens": 3000}
+        section = _build_run_stats_section(1.0, tokens)
+        assert "3k=150% think" in section
+
+    def test_cache_shown_without_percent_when_zero_input(self):
+        tokens = {"input_tokens": 0, "output_tokens": 100, "total_tokens": 100,
+                  "cache_read_tokens": 500}
+        section = _build_run_stats_section(1.0, tokens)
+        assert "500 cache" in section
+        assert "%" not in section  # no percentage when in==0
+
+    def test_reasoning_shown_without_percent_when_zero_output(self):
+        tokens = {"input_tokens": 100, "output_tokens": 0, "total_tokens": 100,
+                  "reasoning_tokens": 200}
+        section = _build_run_stats_section(1.0, tokens)
+        assert "200 think" in section
+        assert "%" not in section
 
     def test_human_tok(self):
         from cron.scheduler import _human_tok
@@ -4939,4 +4967,299 @@ class TestBuildRunStatsSection:
     def test_section_ends_with_newline(self):
         section = _build_run_stats_section(1.0, {"total_tokens": 42})
         assert section.endswith("\n")
+
+
+class TestSubagentTokenAggregation:
+    def test_subagent_tokens_summed_into_job_tokens(self, tmp_path):
+        job = {
+            "id": "subagent-job",
+            "name": "subagent test",
+            "prompt": "delegate work",
+        }
+        fake_db = MagicMock()
+
+        delegate_result = json.dumps({
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "api_calls": 3,
+                    "duration_seconds": 1.5,
+                    "model": "gpt-4o",
+                    "exit_reason": "completed",
+                    "tokens": {"input": 2000, "output": 800},
+                    "cache_read_tokens": 1500,
+                    "reasoning_tokens": 300,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "also done",
+                    "api_calls": 2,
+                    "duration_seconds": 0.8,
+                    "model": "gpt-4o-mini",
+                    "exit_reason": "completed",
+                    "tokens": {"input": 500, "output": 200},
+                    "cache_read_tokens": 0,
+                    "reasoning_tokens": 0,
+                },
+            ],
+            "total_duration_seconds": 2.3,
+        })
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "All subagents finished.",
+                "completed": True,
+                "input_tokens": 1000,
+                "output_tokens": 400,
+                "total_tokens": 1400,
+                "prompt_tokens": 1000,
+                "completion_tokens": 400,
+                "cache_read_tokens": 800,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 100,
+                "messages": [
+                    {"role": "user", "content": "delegate work"},
+                    {"role": "assistant", "content": None, "tool_calls": [
+                        {"id": "call_1", "function": {"name": "delegate_task", "arguments": "{}"}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": delegate_result},
+                    {"role": "assistant", "content": "All subagents finished."},
+                ],
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error, meta = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert meta is not None
+        tokens = meta["tokens"]
+
+        # Parent + two children: 1000 + 2000 + 500 = 3500 input
+        assert tokens["input_tokens"] == 3500
+        # Parent + two children: 400 + 800 + 200 = 1400 output
+        assert tokens["output_tokens"] == 1400
+        # Total = 3500 + 1400 = 4900
+        assert tokens["total_tokens"] == 4900
+        # Cache: 800 + 1500 + 0 = 2300
+        assert tokens["cache_read_tokens"] == 2300
+        # Reasoning: 100 + 300 + 0 = 400
+        assert tokens["reasoning_tokens"] == 400
+        # prompt_tokens/completion_tokens mirror input/output for child tokens
+        assert tokens["prompt_tokens"] == 3500
+        assert tokens["completion_tokens"] == 1400
+
+        # Stats section reflects combined totals
+        assert "in:3.5k" in output
+        assert "out:1.4k" in output
+        assert "cache" in output
+        assert "think" in output
+
+    def test_no_delegate_messages_unchanged(self, tmp_path):
+        job = {
+            "id": "no-subagent-job",
+            "name": "no subagents",
+            "prompt": "simple work",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "input_tokens": 1000,
+                "output_tokens": 400,
+                "total_tokens": 1400,
+                "prompt_tokens": 1000,
+                "completion_tokens": 400,
+                "cache_read_tokens": 200,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 50,
+                "messages": [
+                    {"role": "user", "content": "simple work"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error, meta = run_job(job)
+
+        assert success is True
+        tokens = meta["tokens"]
+        # Unchanged — no delegate_task messages to parse
+        assert tokens["input_tokens"] == 1000
+        assert tokens["output_tokens"] == 400
+        assert tokens["total_tokens"] == 1400
+        assert tokens["cache_read_tokens"] == 200
+        assert tokens["reasoning_tokens"] == 50
+
+    def test_non_delegate_results_ignored(self, tmp_path):
+        """Tool messages with 'results' from non-delegate tools (e.g.
+        web_search) must not contribute to job tokens."""
+        job = {
+            "id": "search-job",
+            "name": "search test",
+            "prompt": "search something",
+        }
+        fake_db = MagicMock()
+
+        search_result = json.dumps({
+            "results": [
+                {"title": "Example", "url": "https://example.com", "snippet": "..."},
+            ],
+        })
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "found it",
+                "completed": True,
+                "input_tokens": 500,
+                "output_tokens": 200,
+                "total_tokens": 700,
+                "prompt_tokens": 500,
+                "completion_tokens": 200,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "messages": [
+                    {"role": "user", "content": "search something"},
+                    {"role": "assistant", "content": None, "tool_calls": [
+                        {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": search_result},
+                    {"role": "assistant", "content": "found it"},
+                ],
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error, meta = run_job(job)
+
+        assert success is True
+        tokens = meta["tokens"]
+        assert tokens["input_tokens"] == 500
+        assert tokens["output_tokens"] == 200
+        assert tokens["total_tokens"] == 700
+        assert tokens["cache_read_tokens"] == 100
+        assert tokens["reasoning_tokens"] == 0
+
+    def test_malformed_child_tokens_survive_int_conversion(self, tmp_path):
+        """Child 'tokens' values that aren't numeric are silently treated
+        as zero rather than crashing the cron run."""
+        job = {
+            "id": "malformed-job",
+            "name": "malformed test",
+            "prompt": "delegate work",
+        }
+        fake_db = MagicMock()
+
+        delegate_result = json.dumps({
+            "results": [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "done",
+                    "tokens": {"input": "not-a-number", "output": None},
+                    "cache_read_tokens": "also-bad",
+                    "reasoning_tokens": [1, 2, 3],
+                },
+            ],
+            "total_duration_seconds": 0.5,
+        })
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+                "messages": [
+                    {"role": "user", "content": "delegate work"},
+                    {"role": "assistant", "content": None, "tool_calls": [
+                        {"id": "call_1", "function": {"name": "delegate_task", "arguments": "{}"}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": delegate_result},
+                    {"role": "assistant", "content": "ok"},
+                ],
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error, meta = run_job(job)
+
+        assert success is True
+        tokens = meta["tokens"]
+        # Malformed child token values treated as zero — parent-only totals
+        assert tokens["input_tokens"] == 100
+        assert tokens["output_tokens"] == 50
+        assert tokens["total_tokens"] == 150
+        assert tokens["cache_read_tokens"] == 0
+        assert tokens["reasoning_tokens"] == 0
 

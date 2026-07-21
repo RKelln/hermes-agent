@@ -2565,8 +2565,20 @@ def _build_run_stats_section(
     _cache_read = tokens.get("cache_read_tokens", 0)
     _reasoning = tokens.get("reasoning_tokens", 0)
 
-    _cache_str = f" ({_human_tok(_cache_read)} cached)" if _cache_read else ""
-    _reason_str = f" ({_human_tok(_reasoning)} reason)" if _reasoning else ""
+    if _cache_read and _in:
+        _cache_pct = 100 * _cache_read / _in
+        _cache_str = f" ({_human_tok(_cache_read)}={_cache_pct:.0f}% cache)"
+    elif _cache_read:
+        _cache_str = f" ({_human_tok(_cache_read)} cache)"
+    else:
+        _cache_str = ""
+    if _reasoning and _out:
+        _reason_pct = 100 * _reasoning / _out
+        _reason_str = f" ({_human_tok(_reasoning)}={_reason_pct:.0f}% think)"
+    elif _reasoning:
+        _reason_str = f" ({_human_tok(_reasoning)} think)"
+    else:
+        _reason_str = ""
 
     _blocked_parts = []
     if blocked_calls:
@@ -3465,6 +3477,67 @@ def run_job(
             _val = result.get(_key, 0)
             _job_tokens[_key] = int(_val) if _val else 0
         _blocked_calls = result.get("blocked_calls") or {}
+        # Aggregate subagent token counts from delegate_task tool results.
+        # Scan for role:"tool" messages whose content is a delegate_task
+        # JSON response ({"results": [...], ...}).  Verify the preceding
+        # assistant message's tool_calls contain delegate_task or
+        # async_delegation so we don't match other tools (web_search, etc.)
+        # that also use a "results" key.
+        _delegate_tool_names = frozenset({"delegate_task", "async_delegation"})
+        _messages = result.get("messages") or []
+        _prev_assistant = None
+        for _msg in _messages:
+            if _msg.get("role") == "assistant":
+                _prev_assistant = _msg
+                continue
+            if _msg.get("role") != "tool":
+                continue
+            _content = _msg.get("content", "")
+            if not _content or not isinstance(_content, str):
+                continue
+            if _prev_assistant is None:
+                continue
+            _tc = _prev_assistant.get("tool_calls") or []
+            if not any(
+                t.get("function", {}).get("name") in _delegate_tool_names
+                for t in _tc
+            ):
+                continue
+            try:
+                _parsed = json.loads(_content)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            _children = _parsed.get("results") if isinstance(_parsed, dict) else None
+            if not isinstance(_children, list):
+                continue
+            for _child in _children:
+                if not isinstance(_child, dict):
+                    continue
+                _tokens = _child.get("tokens")
+                if isinstance(_tokens, dict):
+                    try:
+                        _child_in = int(_tokens.get("input", 0) or 0)
+                        _child_out = int(_tokens.get("output", 0) or 0)
+                    except (TypeError, ValueError):
+                        _child_in = 0
+                        _child_out = 0
+                else:
+                    _child_in = 0
+                    _child_out = 0
+                _job_tokens["input_tokens"] = _job_tokens.get("input_tokens", 0) + _child_in
+                _job_tokens["output_tokens"] = _job_tokens.get("output_tokens", 0) + _child_out
+                _job_tokens["prompt_tokens"] = _job_tokens.get("prompt_tokens", 0) + _child_in
+                _job_tokens["completion_tokens"] = _job_tokens.get("completion_tokens", 0) + _child_out
+                _job_tokens["total_tokens"] = _job_tokens.get("total_tokens", 0) + _child_in + _child_out
+                try:
+                    _job_tokens["cache_read_tokens"] = _job_tokens.get("cache_read_tokens", 0) + int(_child.get("cache_read_tokens", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    _job_tokens["reasoning_tokens"] = _job_tokens.get("reasoning_tokens", 0) + int(_child.get("reasoning_tokens", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+
         _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens, _blocked_calls)
 
         output = f"""# Cron Job: {job_name}
