@@ -108,7 +108,13 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
-BLOCK_RECURRENCE_LIMIT = 2
+#
+# FORK PATCH (2026-08-07): env-overridable via
+# ``HERMES_KANBAN_BLOCK_RECURRENCE_LIMIT`` so legit review round-trips (block
+# review-required -> REQUEST_CHANGES -> unblock -> re-block) get headroom
+# without removing the runaway-loop net. Gateway drop-in sets 5. Upstream
+# default remains 2 when unset.
+BLOCK_RECURRENCE_LIMIT = int(os.environ.get("HERMES_KANBAN_BLOCK_RECURRENCE_LIMIT", "2"))
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
