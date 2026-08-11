@@ -26,7 +26,7 @@ def test_submit_error_after_commit_observes_the_admitted_run(tmp_path, monkeypat
             # The owner admitted (and here, ran) the fire; the firer never sees the receipt.
             claimed = authority.persistence.admissions.claim(epoch=authority.epoch, session_id=answer['session_id'])
             settle_claim(authority.persistence, claimed,
-                         result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
+                         result={'result': {'cron_result': [True, 'document', 'answer', None, None]}, 'usage': {}})
             raise RuntimeError('owner answer lost after commit')
 
         monkeypatch.setattr(session_cron, 'operation', lossy)

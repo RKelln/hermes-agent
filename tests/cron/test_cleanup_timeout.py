@@ -89,13 +89,13 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
             mock_agent_cls.return_value = mock_agent
 
             started = time.monotonic()
-            success, _output, final_response, error = run_job(job)
+            success, _output, final_response, error, _ = run_job(job)
             elapsed = time.monotonic() - started
 
         assert fake_db.entered.wait(timeout=2.0)
         assert elapsed < 5.0
         assert success is True
-        assert final_response == "ok"
+        assert final_response.startswith("ok")  # run-stats footer appended (fork patch)
         assert error is None
     finally:
         release.set()
@@ -119,7 +119,7 @@ def test_monitor_suppressed_tick_ends_owner_session_row(tmp_path):
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("persistence_assembly.open_persistence", return_value=fake_db), \
          patch("cron.monitor.check_monitor", return_value=outcome):
-        success, _output, final_response, error = run_job(job)
+        success, _output, final_response, error, _run_metadata = run_job(job)
 
     assert success is True
     assert error is None

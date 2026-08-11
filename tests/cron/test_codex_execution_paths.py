@@ -143,14 +143,14 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_p
     _Codex401ThenSuccessAgent.refresh_attempts = 0
     _Codex401ThenSuccessAgent.last_init = {}
 
-    success, output, final_response, error = _run_owned_job(
+    success, output, final_response, error, _ = _run_owned_job(
         {"id": "job-1", "name": "Codex Refresh Test", "prompt": "ping", "model": "gpt-5.3-codex"},
         tmp_path,
     )
 
     assert success is True
     assert error is None
-    assert final_response == "Recovered via refresh"
+    assert final_response.startswith("Recovered via refresh")  # stats section is appended
     assert "Recovered via refresh" in output
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"

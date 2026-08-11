@@ -22,7 +22,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
         owner = SimpleNamespace(persistence=store)
         token = session_cron._execution.set((owner, "diagnostic-session", job["id"], "diagnostic-fire"))
         try:
-            success, output, response, error = scheduler.run_job(job, execution_id="diagnostic-fire")
+            success, output, response, error, _ = scheduler.run_job(job, execution_id="diagnostic-fire")
         finally:
             session_cron._execution.reset(token)
         assert store.sessions.get("diagnostic-session").end_reason == "cron_suppressed"

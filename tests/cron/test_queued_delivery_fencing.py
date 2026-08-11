@@ -5,7 +5,7 @@ from cron import delivery_queue, executions, jobs, scheduler
 
 def test_claim_stolen_after_the_ownership_sample_queues_no_ghost_send(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None, None))
     job = jobs.create_job(prompt="p", schedule="every 1h", deliver="telegram:fixture")
     fire = jobs.claim_job_for_fire(job["id"], return_job=True, force=True)
     samples = []
@@ -28,7 +28,7 @@ def test_claim_stolen_after_the_ownership_sample_queues_no_ghost_send(tmp_path, 
 
 def test_dead_drain_owner_settles_the_run_it_fenced_unknown(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None, None))
     job = jobs.create_job(prompt="p", schedule="every 1h", deliver="telegram:fixture")
     scheduler.run_one_job(job)
     execution = executions.latest_execution(job["id"])
@@ -48,7 +48,7 @@ def test_dead_drain_owner_settles_the_run_it_fenced_unknown(tmp_path, monkeypatc
 
 def test_origin_with_no_resolvable_target_is_not_configured_never_delivered(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None, None))
     job = jobs.create_job(prompt="p", schedule="every 1h", deliver="origin")
     scheduler.run_one_job(job)
     execution = executions.latest_execution(job["id"])

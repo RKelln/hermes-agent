@@ -39,7 +39,7 @@ _DIALS = textwrap.dedent('''
     from cron.scheduler_authority import run_canonical_job
     from agent.runtime_session_store import WorkerRPC
     from hermes_constants import get_hermes_home
-    success, _output, _answer, error = run_canonical_job({'id': 'cron4job', 'name': 'cron-4'},
+    success, _output, _answer, error, _run_metadata = run_canonical_job({'id': 'cron4job', 'name': 'cron-4'},
                                                          execution_id='cron4-exec')
     try:
         WorkerRPC(get_hermes_home())('worker.heartbeat')

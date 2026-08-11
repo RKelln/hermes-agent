@@ -76,7 +76,7 @@ def test_run_job_stamps_workdir_on_cron_session_row(tmp_path):
     job = {"id": "workdir-job", "name": "workdir job", "prompt": "hello", "workdir": str(repo)}
 
     try:
-        success, _output, _final, error = _run_job_with_real_db(job, db, tmp_path)
+        success, _output, _final, error, _run_metadata = _run_job_with_real_db(job, db, tmp_path)
 
         assert success is True, error
         rows = _cron_rows(tmp_path)
@@ -91,7 +91,7 @@ def test_run_job_without_workdir_leaves_cron_session_cwd_null(tmp_path):
     job = {"id": "no-workdir-job", "name": "no workdir", "prompt": "hello"}
 
     try:
-        success, _output, _final, error = _run_job_with_real_db(job, db, tmp_path)
+        success, _output, _final, error, _run_metadata = _run_job_with_real_db(job, db, tmp_path)
 
         assert success is True, error
         rows = _cron_rows(tmp_path)

@@ -175,7 +175,7 @@ def test_ladder_reruns_do_not_spend_extra_repeat_budget(tmp_cron_home, monkeypat
             import threading
             cancelled = threading.Event()
             cancelled.set()
-            monkeypatch.setattr(sched, "run_job", lambda *_a, **_kw: (True, "out", "done", None))
+            monkeypatch.setattr(sched, "run_job", lambda *_a, **_kw: (True, "out", "done", None, None))
             assert sched._run_one_job_body(run, transport_cancel=cancelled) is True
             j = get_job(job_id)
             assert j["last_error"] == sched._OWNERSHIP_LOST_INTERRUPTED

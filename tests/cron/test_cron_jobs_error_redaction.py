@@ -180,7 +180,7 @@ def test_queued_delivery_error_settled_onto_job_is_length_bounded(tmp_path, monk
     from cron.jobs_error_text import MAX_PERSISTED_ERROR_CHARS
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None, None))
     job = jobs.create_job(prompt="p", schedule="every 1h", deliver="telegram:fixture")
     scheduler.run_one_job(job)
     assert jobs.get_job(job["id"])["last_status"] == "delivery_queued"

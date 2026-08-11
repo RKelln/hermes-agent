@@ -110,7 +110,8 @@ def _run_booked_job(monkeypatch, tmp_path):
              "schedule_display": "manual"}, execution_id="verify-fire")
     finally:
         session_cron._execution.reset(token)
-    assert result[0] and result[2] == "done", result
+    # run_job appends the ### Run Statistics section to the delivered response (fork patch 1).
+    assert result[0] and result[2].startswith("done"), result
     assert db.ended[0][0] == "verify-session"
     return [db]
 

@@ -80,7 +80,8 @@ def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypat
     try:
         with _owner_execution(db, job):
             start = time.monotonic()
-            assert sched.run_job(job) == result
+            # run_job answers 5-tuple: (…, error, run_metadata); this gate short-circuits, so None.
+            assert sched.run_job(job) == (*result, None)
             assert time.monotonic() - start < 2
         assert entered.wait(2)
         assert calls[0] == "end"
@@ -151,7 +152,7 @@ def test_real_preparation_refusals_keep_result_and_end_once(admitted, monkeypatc
     with _owner_execution(db, job):
         result = sched.run_job(job)
     if gate == "empty_prompt":
-        assert result == (True, "", sched.SILENT_MARKER, None)
+        assert result == (True, "", sched.SILENT_MARKER, None, None)
     else:
         assert result[0] is False and result[3]
         if gate == "empty_payload":

@@ -23,7 +23,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
-        return (success, output, fr, error)
+        return (success, output, fr, error, None)
 
     def fake_save(jid, out):
         calls.append(("save", jid))
@@ -289,7 +289,7 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     monkeypatch.setattr(
         s,
         "run_job",
-        lambda *_a, **_kw: (True, "out", "final response", None),
+        lambda *_a, **_kw: (True, "out", "final response", None, None),
     )
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
     monkeypatch.setattr(
@@ -314,7 +314,8 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     assert delivered == [("j5", "final response")]
     assert s.drain_delivery_queue(adapters={}, loop=None) == 0
     assert mark_calls[0] == (("j5", True, None), {
-        "delivery_error": None, "execution_id": "exec-j5", "status": "delivery_queued"})
+        "delivery_error": None, "run_metadata": None,
+        "execution_id": "exec-j5", "status": "delivery_queued"})
     assert mark_calls[1] == (
         ("j5", False, "bookkeeping boom"),
         {"delivery_error": None},
@@ -393,7 +394,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
-        return (True, "out", "final", None)
+        return (True, "out", "final", None, None)
 
     def fake_deliver(*args, **kwargs):
         scope_during_delivery["scope"] = ss.current_secret_scope()

@@ -26,7 +26,7 @@ def test_a_job_deleted_before_submit_fails_with_mains_refusal_name(tmp_path, mon
             finally:
                 session_cron.unbind_owner(authority)
         try:
-            ok, _doc, _final, error = asyncio.run(probe())
+            ok, _doc, _final, error, _run_metadata = asyncio.run(probe())
         finally:
             db.close()
         assert ok is False
