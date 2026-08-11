@@ -18,7 +18,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
         owner = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / "state.db"))
         token = session_cron._execution.set((owner, "diagnostic-session", job["id"], "diagnostic-fire"))
         try:
-            success, output, response, error = scheduler.run_job(job, execution_id="diagnostic-fire")
+            success, output, response, error, _ = scheduler.run_job(job, execution_id="diagnostic-fire")
         finally:
             session_cron._execution.reset(token)
         saved = jobs.save_job_output(job["id"], output).read_text(encoding="utf-8")

@@ -122,7 +122,7 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         mock_agent_cls.return_value = mock_agent
-        success, _output, _final, error = _run_owned_job(job, tmp_path)
+        success, _output, _final, error, _ = _run_owned_job(job, tmp_path)
         agent_kwargs = mock_agent_cls.call_args.kwargs if mock_agent_cls.called else None
     return success, error, agent_kwargs, (resolve_kwargs or None)
 

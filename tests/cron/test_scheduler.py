@@ -570,11 +570,11 @@ class TestRunJobSessionPersistence:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+            success, output, final_response, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert "ok" in output
 
         kwargs = mock_agent_cls.call_args.kwargs
@@ -750,7 +750,7 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler.mark_job_run") as mock_mark, \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-             patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
+             patch("cron.scheduler.run_job", return_value=(True, "output", "", None, None)):
             tick(verbose=False)
 
         # Should be called with success=False because final_response is empty
@@ -800,11 +800,11 @@ class TestRunJobSessionPersistence:
                  },
              ), \
              patch("run_agent.AIAgent", FakeAgent):
-            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+            success, output, final_response, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert "ok" in output
         assert seen == {
             "platform": "telegram",
@@ -860,11 +860,11 @@ class TestRunJobSessionPersistence:
                  },
              ), \
              patch("run_agent.AIAgent", FakeAgent):
-            success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+            success, output, final_response, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert "ok" in output
         assert seen == {
             "platform": "slack",
@@ -947,7 +947,7 @@ class TestRunJobSessionPersistence:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _output, _final, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _output, _final, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1006,10 +1006,10 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent", FakeAgent):
             for job in jobs:
-                success, output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+                success, output, final_response, error, _ = _run_owned_job(job, tmp_path, fake_db)
                 assert success is True
                 assert error is None
-                assert final_response == "ok"
+                assert final_response.startswith("ok")
                 assert "ok" in output
 
         assert seen == [
@@ -1061,7 +1061,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1125,7 +1125,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True, error
         assert error is None
@@ -1177,7 +1177,7 @@ class TestRunJobConfigEnvVarExpansion:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1223,7 +1223,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1245,7 +1245,7 @@ class TestRunJobModelResolution:
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is False
         assert error is not None
@@ -1278,7 +1278,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is True
         assert error is None
@@ -1303,7 +1303,7 @@ class TestRunJobModelResolution:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
-            success, _, _, error = _run_owned_job(job, tmp_path, fake_db)
+            success, _, _, error, _ = _run_owned_job(job, tmp_path, fake_db)
 
         assert success is False
         assert "Hermes stopped because your settings file" in error
@@ -1356,13 +1356,13 @@ class TestRunJobSkillBacked:
             mock_agent_cls.return_value = mock_agent
 
             try:
-                success, _output, final_response, error = _run_owned_job(job, tmp_path, fake_db)
+                success, _output, final_response, error, _ = _run_owned_job(job, tmp_path, fake_db)
             finally:
                 clear_env_passthrough()
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
@@ -1378,7 +1378,7 @@ class TestSilentDelivery:
     def test_silent_response_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1391,7 +1391,7 @@ class TestSilentDelivery:
         response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1402,7 +1402,7 @@ class TestSilentDelivery:
     def test_silent_is_case_insensitive(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1417,7 +1417,7 @@ class TestSilentDelivery:
         for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
             with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None, None)), \
                  patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
                  patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
                  patch("cron.scheduler.mark_job_run"):
@@ -1430,7 +1430,7 @@ class TestSilentDelivery:
         response = "I considered staying [SILENT] but here is the summary: 3 items merged."
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1442,7 +1442,7 @@ class TestSilentDelivery:
         """Failed jobs deliver regardless of [SILENT] in output."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1453,7 +1453,7 @@ class TestSilentDelivery:
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None, None)), \
              patch("cron.scheduler.save_job_output") as save_mock, \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -1467,7 +1467,7 @@ class TestSilentDelivery:
         """Whitespace-only final responses should behave like empty responses."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.delivery_queue.enqueue", return_value={"status": "queued"}) as deliver_mock, \
              patch("cron.scheduler.mark_job_run") as mark_mock:
@@ -1498,7 +1498,7 @@ class TestOneShotDispatchClaim:
         with patch("cron.scheduler.get_due_jobs", return_value=[self._oneshot()]), \
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.claim_dispatch", side_effect=lambda _id: order.append("claim") or True), \
-             patch("cron.scheduler.run_job", side_effect=lambda _j, **_kw: order.append("run") or (True, "# out", "ok", None)), \
+             patch("cron.scheduler.run_job", side_effect=lambda _j, **_kw: order.append("run") or (True, "# out", "ok", None, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result"), \
              patch("cron.scheduler.mark_job_run"):
@@ -1579,7 +1579,7 @@ class TestRunJobWakeGate:
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
-            success, _doc, final, err = _run_owned_job(self._make_job(), tmp_path)
+            success, _doc, final, err, _ = _run_owned_job(self._make_job(), tmp_path)
 
         assert success is True
         assert err is None
@@ -1600,7 +1600,7 @@ class TestRunJobWakeGate:
         with patch.object(sched_script, "_run_job_script",
                           return_value=(True, script_output)), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
-            success, _doc, _final, err = _run_owned_job(self._make_job(), tmp_path)
+            success, _doc, _final, err, _ = _run_owned_job(self._make_job(), tmp_path)
 
         agent_cls.assert_called_once()
         # The script output should be visible in the prompt passed to

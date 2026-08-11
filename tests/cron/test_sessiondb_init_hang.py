@@ -52,7 +52,7 @@ def test_sessiondb_init_preserves_multiplex_profile_context(owner_run, tmp_path)
     token = set_hermes_home_override(profile_home)
     try:
         with patch("hermes_state_registry.acquire", side_effect=acquire):
-            success, _, response, error = scheduler.run_job(job, execution_id=execution_id)
+            success, _, response, error, _ = scheduler.run_job(job, execution_id=execution_id)
     finally:
         reset_hermes_home_override(token)
     assert (success, response, error) == (True, "ok", None)
@@ -79,7 +79,7 @@ def test_run_job_does_not_hang_when_sessiondb_init_wedges(owner_run, tmp_path, m
     try:
         with patch("hermes_state_registry.acquire", side_effect=acquire):
             started = time.monotonic()
-            success, _, response, error = scheduler.run_job(job, execution_id=execution_id)
+            success, _, response, error, _ = scheduler.run_job(job, execution_id=execution_id)
             elapsed = time.monotonic() - started
             assert entered.is_set()
             assert elapsed < 5
@@ -100,7 +100,7 @@ def test_owner_store_failure_never_runs_unpersisted_agent(owner_run, failure):
     wrong_db = MagicMock()
     with patch("hermes_state_registry.acquire", return_value=wrong_db,
                side_effect=OSError("store unavailable") if failure == "acquire-error" else None):
-        success, _, response, error = scheduler.run_job(job, execution_id=execution_id)
+        success, _, response, error, _ = scheduler.run_job(job, execution_id=execution_id)
     assert not success and response == ""
     assert error and ("canonical owner store" if failure == "wrong-store" else "store unavailable") in error
     agent_cls.assert_not_called()
@@ -160,7 +160,7 @@ def test_wake_gate_false_never_opens_session_db(owner_run):
     job["script"] = "gate.py"
     with patch("hermes_state_registry.acquire") as acquire, \
          patch("cron.scheduler._run_job_script_with_claim_heartbeat", return_value=(True, '{"wakeAgent": false}')):
-        success, _, _, error = scheduler.run_job(job, execution_id=execution_id)
+        success, _, _, error, _ = scheduler.run_job(job, execution_id=execution_id)
     assert success and error is None
     acquire.assert_not_called()
     agent_cls.assert_not_called()

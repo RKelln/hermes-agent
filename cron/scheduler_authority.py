@@ -91,7 +91,9 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 state = await call('recover', params)
                 if state['status'] == 'missing':
                     error = f'{type(exc).__name__}: {exc}'
-                    result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error]
+                    # 5-tuple to match run_job's contract (…, error, run_metadata): a refusal
+                    # never reached the model, so it carries no statistics.
+                    result = [False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error, None]
                     record['refusal'] = result
                     record['job'] = dict(job)
                     save()
@@ -144,7 +146,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         if attempted:
             raise CronExecutionUnknown(f'Cron execution unverified; reconcile {journal}: {exc}') from exc
         error = f'{type(exc).__name__}: {exc}'
-        return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error
+        # 5-tuple like run_job (…, error, run_metadata); an unverified admission has no stats.
+        return False, f'# Cron Job: {job["id"]} (FAILED)\n\n{error}\n', '', error, None
 
 def reconcile_pending(*, allow_connect=True):
     """Observe prepared fires; never submit missing or interrupted work.
@@ -211,13 +214,18 @@ def reconcile_pending(*, allow_connect=True):
                     record['pause_recorded'] = _pause_identity(pause_job(params['job_id'], reason=reason))
                     atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
                 continue
-            success, output, answer, error = state['result']
+            # run_job hands back a 5-tuple since the run-statistics patch (…, error,
+            # run_metadata); a receipt written before it, and every refusal, carries four.
+            _result = tuple(state['result'])
+            success, output, answer, error = _result[:4]
+            run_metadata = _result[4] if len(_result) > 4 else None
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']
             # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
             # blank answer are failures, whichever process books them.
             success, error, declared = _apply_agent_failure_marker(job, success, error, answer)
-            delivery = _RunDelivery(job, success, error, agent_declared=declared)
+            delivery = _RunDelivery(job, success, error, agent_declared=declared,
+                                    run_metadata=run_metadata)
             # The canonical receipt supplies the result; a dead scheduler's fire claim does not
             # authorize replay and must not prevent finishing its durable bookkeeping.
             fence = _FireOwnership(dict(job, fire_claim=None))

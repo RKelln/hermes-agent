@@ -100,7 +100,7 @@ class TestCronRunJobGuard:
 
         _write_corrupt_config(tmp_path)
 
-        _success, _output_doc, _final_response, error = run_job(
+        _success, _output_doc, _final_response, error, _ = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
         assert "Hermes stopped because your settings file" not in (error or "")

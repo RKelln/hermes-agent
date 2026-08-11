@@ -2435,6 +2435,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    run_metadata: Optional[dict] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2456,6 +2457,10 @@ def mark_job_run(
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
+
+    ``run_metadata`` is optional runtime statistics for monitoring — a dict with keys like
+    ``duration_seconds`` (float) and ``tokens`` (dict of token-type → count). Stored as
+    ``last_run_metadata`` on the job record and appended to ``run_history`` (last 20 runs retained).
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2472,6 +2477,23 @@ def mark_job_run(
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]
+        # Store run-time statistics for monitoring and cost tracking
+        if run_metadata:
+            job["last_run_metadata"] = run_metadata
+            run_history = job.get("run_history")
+            if not isinstance(run_history, list):
+                run_history = []
+            entry = {
+                "time": now,
+                "success": success,
+                **run_metadata,
+            }
+            run_history.append(entry)
+            if len(run_history) > 20:
+                run_history = run_history[-20:]
+            job["run_history"] = run_history
+        elif run_metadata is not None:
+            job.pop("last_run_metadata", None)
         _advance_after_run(job, now, ladder_rung=ladder_rung)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
