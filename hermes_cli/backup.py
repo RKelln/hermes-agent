@@ -105,7 +105,10 @@ _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"
 # Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data / Cookies;
 # the secret caches and Photon sidecar token. Root-scoped like models/ — a skill's own browser_profiles/ is
 # user data. Backup-only: do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES})
+# FORK PATCH: ``bin`` is backup-only for the same clone-all reason — tool binaries (tirith/uv/uvx) at
+# ``~/.hermes/bin`` are re-fetched on demand, so keeping them out of the archive saves ~72MB per backup
+# without touching what a clone copies.
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", "bin", *SECRET_CACHE_FILES})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
