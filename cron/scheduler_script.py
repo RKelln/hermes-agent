@@ -256,8 +256,10 @@ def _windows_cron_bootstrap_argv(
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Validate a job script path; ``(path, None)`` or ``(None, error)``. Scripts MUST resolve
-    inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
-    traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
+    inside HERMES_HOME/scripts/, or inside a skill's own ``scripts/`` directory via the explicit
+    skill-scripts allowlist (``skills/<cat>/<skill>/scripts/x.py``, resolved against
+    HERMES_HOME) — relative, absolute and ``~`` paths are all validated (path traversal /
+    absolute-path injection / symlink escape); contract of lifecycle_guard._expand_candidate_path."""
     scripts_dir = _sched._get_hermes_home() / "scripts"
     _ensure_cron_dir(scripts_dir)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -277,16 +279,28 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     except (ValueError, RuntimeError, OSError):
         # RuntimeError: unexpandable ``~`` (no resolvable HOME).
         return None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
-    path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
+    if raw.is_absolute():
+        path = raw.resolve()
+    elif raw.parts and raw.parts[0] == "skills":
+        # Skill-scripts allowlist syntax: skills/<cat>/<skill>/scripts/x.py
+        # resolves against HERMES_HOME, not the scripts dir.
+        path = (_sched._get_hermes_home() / raw).resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
 
-    # Traversal / absolute-path / symlink escape guard — MUST stay inside HERMES_HOME/scripts/.
+    # Traversal / absolute-path / symlink escape guard — MUST stay inside HERMES_HOME/scripts/,
+    # or inside a skill's scripts/ dir (the explicit skill-scripts allowlist). Symlinks are
+    # resolved, so a link inside a skill pointing outside HERMES_HOME fails containment too.
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
-        return None, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+        from tools.path_security import skill_scripts_relpath
+
+        if skill_scripts_relpath(path, _sched._get_hermes_home()) is None:
+            return None, (
+                f"Blocked: script path resolves outside the scripts directory "
+                f"({scripts_dir_resolved}): {script_path!r}"
+            )
     if not path.exists():
         # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
         # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
