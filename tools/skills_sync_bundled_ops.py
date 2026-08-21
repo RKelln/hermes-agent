@@ -58,9 +58,56 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
+def _find_user_skill_copy(skill_name: str, skill_dir: Path, bundled_dir: Path) -> Optional[Path]:
+    """Locate the user's copy of a bundled skill BY NAME across all categories.
+
+    ``_compute_relative_dest`` derives the destination from the *bundled*
+    category path, so a user fork that lives in a DIFFERENT category (e.g.
+    ``software-development/sdlc-review`` vs the bundled ``devops/sdlc-review``)
+    is invisible to a category-path match: the bundled-category destination
+    does not exist, so the fork's manifest hash is never compared and the fork
+    silently diverges. When the bundled-category path is missing, fall back to
+    a name scan of the whole user skills tree so cross-category forks surface
+    as tracked user modifications.
+
+    Returns the user copy path, or None when no copy exists anywhere under the
+    user skills tree (a stale manifest entry — the local copy was pruned,
+    archived, or renamed).
+    """
+    ss = _ss()
+    dest = ss._compute_relative_dest(skill_dir, bundled_dir)
+    if dest.exists():
+        return dest
+    skills_dir = ss._skills_dir()
+    if not skills_dir.exists():
+        return None
+    # Lazy imports: this module is imported at skills_sync module top, and
+    # these helpers live in modules that skills_sync itself imports — resolve
+    # them only on the rare cross-category fallback path to avoid any cycle.
+    from agent.skill_utils import is_excluded_skill_path
+    from tools.skill_usage import _read_skill_name
+    for skill_md in sorted(skills_dir.rglob("SKILL.md")):
+        try:
+            rel = skill_md.relative_to(skills_dir)
+        except ValueError:
+            continue
+        if is_excluded_skill_path(rel, root=skills_dir):
+            continue
+        candidate = skill_md.parent
+        if _read_skill_name(skill_md, candidate.name) == skill_name:
+            return candidate
+    return None
+
+
 def list_user_modified_bundled_skills() -> List[dict]:
     """Bundled skills ``hermes update`` keeps because the user edited them (same test the sync
-    loop uses). Name-sorted ``{"name", "dest", "bundled_src"}`` dicts."""
+    loop uses). Name-sorted dicts: ``{"name", "dest", "bundled_src"}`` for tracked user
+    modifications; ``{"name", "dest": None, "bundled_src", "stale": True}`` for manifest entries
+    whose local copy no longer exists anywhere (pruned / archived / renamed). The user's copy is
+    located BY NAME across all categories (not just the bundled category path), so a fork that
+    lives in a different category than the bundled original is tracked instead of silently
+    diverging.
+    """
     ss = _ss()
     if not (manifest := ss._read_manifest()):
         return []
@@ -68,8 +115,25 @@ def list_user_modified_bundled_skills() -> List[dict]:
     modified: List[dict] = []
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
-        dest = ss._compute_relative_dest(skill_dir, bundled_dir)
-        if origin_hash and dest.exists() and not ss._matches_origin_hash(dest, origin_hash):
+        if not origin_hash:
+            continue
+        dest = _find_user_skill_copy(skill_name, skill_dir, bundled_dir)
+        if dest is None:
+            # The bundled-category destination is missing AND no same-named
+            # copy exists anywhere in the user skills tree: the manifest entry
+            # points at a destination that no longer exists (pruned, archived,
+            # or renamed). Surface it as stale — a silently skipped entry is
+            # exactly how the cross-category fork went undetected.
+            modified.append(
+                {
+                    "name": skill_name,
+                    "dest": None,
+                    "bundled_src": skill_dir,
+                    "stale": True,
+                }
+            )
+            continue
+        if not ss._matches_origin_hash(dest, origin_hash):
             modified.append({"name": skill_name, "dest": dest, "bundled_src": skill_dir})
     return sorted(modified, key=lambda e: e["name"])
 

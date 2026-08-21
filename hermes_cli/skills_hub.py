@@ -982,10 +982,18 @@ def do_list_modified(console: Optional[Console] = None, as_json: bool = False) -
     if not modified:
         c.print("[dim]No user-modified bundled skills — everything tracks upstream.[/]\n")
         return
-    c.print(f"\n[bold]{len(modified)} user-modified bundled skill(s)[/] "
+    stale = [m for m in modified if m.get("stale")]
+    live = [m for m in modified if not m.get("stale")]
+
+    c.print(f"\n[bold]{len(live)} user-modified bundled skill(s)[/] "
             "[dim](kept as-is by `hermes update`):[/]")
-    for entry in modified:
+    for entry in live:
         c.print(f"  [yellow]~[/] {entry['name']}")
+    if stale:
+        c.print(f"\n[bold]{len(stale)} stale manifest entr(ies)[/] "
+                "[dim](bundled destination missing locally — pruned/renamed?):[/]")
+        for entry in stale:
+            c.print(f"  [red]![/] {entry['name']} [dim](no local copy — stale)[/]")
     c.print()
     c.print("[dim]See changes:   hermes skills diff <name>[/]")
     c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")

@@ -14,6 +14,7 @@ clears the modified state so the two stay consistent.
 """
 
 from contextlib import ExitStack
+import shutil
 from unittest.mock import patch
 
 from tools.skills_sync import sync_skills
@@ -75,4 +76,58 @@ def test_reset_clears_modified_state(tmp_path):
         # Restore from the stock source, then it must no longer be flagged.
         result = reset_bundled_skill("foo", restore=True)
         assert result["ok"] is True
+        assert list_user_modified_bundled_skills() == []
+
+
+def test_fork_in_different_category_is_tracked(tmp_path):
+    """A fork living in a DIFFERENT category than the bundled original must be
+    tracked as a user modification.
+
+    The bundled-category destination is gone (pruned/archived, the sdlc-review
+    shape) and the user's fork lives at other-category/foo; the manifest hash
+    must be compared against the fork, not silently skipped because the
+    bundled-category path is missing.
+    """
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        # Prune the bundled-category copy, then fork into another category.
+        shutil.rmtree(skills_dir / "category" / "foo")
+        fork = skills_dir / "other-category" / "foo"
+        fork.mkdir(parents=True)
+        (fork / "SKILL.md").write_text("---\nname: foo\n---\n# Foo Skill (fork)\n")
+        (fork / "helper.py").write_text("print('forked')\n")
+
+        modified = list_user_modified_bundled_skills()
+        assert [m["name"] for m in modified] == ["foo"]
+        assert modified[0].get("stale") is None
+        assert modified[0]["dest"] == fork
+
+
+def test_missing_dest_is_flagged_stale(tmp_path):
+    """A manifest entry whose destination exists nowhere (pruned and not
+    forked) must be surfaced as stale instead of silently skipped."""
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        shutil.rmtree(skills_dir / "category" / "foo")
+
+        modified = list_user_modified_bundled_skills()
+        assert [m["name"] for m in modified] == ["foo"]
+        assert modified[0]["stale"] is True
+        assert modified[0]["dest"] is None
+
+
+def test_pristine_fork_elsewhere_is_not_modified(tmp_path):
+    """A cross-category fork whose content matches the origin hash (fresh
+    sync, untouched) must NOT be reported as modified — only stale-safe."""
+    bundled, skills_dir, manifest_file = _env(tmp_path)
+    with _patches(bundled, skills_dir, manifest_file):
+        sync_skills(quiet=True)
+        shutil.rmtree(skills_dir / "category" / "foo")
+        fork = skills_dir / "other-category" / "foo"
+        fork.mkdir(parents=True)
+        (fork / "SKILL.md").write_text("---\nname: foo\n---\n# Foo Skill\n")
+        (fork / "helper.py").write_text("print('stock')\n")
+
         assert list_user_modified_bundled_skills() == []
