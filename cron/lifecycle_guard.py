@@ -1108,7 +1108,13 @@ def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
 
 def _resolve_script_path(script_path: str) -> Optional[Path]:
     """Resolve a cron ``script`` value the way ``cron.scheduler`` does (relative paths live under
-    ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run."""
+    ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run.
+
+    FORK PATCH (skill-scripts allowlist): the scheduler also accepts ``skills/<cat>/<skill>/scripts/x.py``
+    resolved against HERMES_HOME. Without the same branch here the path lands in
+    ``<HERMES_HOME>/scripts/skills/...``, which does not exist, so the scan reads nothing and a
+    skill-owned script would run UNSCANNED — the allowlist must not open a blind spot.
+    """
     from hermes_constants import get_hermes_home
 
     raw = _expand_candidate_path(script_path)
@@ -1117,7 +1123,10 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     if raw.is_absolute():
         return raw
     try:
-        return get_hermes_home() / "scripts" / raw
+        home = get_hermes_home()
+        if raw.parts and raw.parts[0] == "skills":
+            return home / raw
+        return home / "scripts" / raw
     except (RuntimeError, OSError):
         # get_hermes_home() falls back to Path.home(), which raises when neither HERMES_HOME nor
         # HOME is resolvable (launchd/systemd) — same ingestion contract: nothing to scan.
