@@ -364,7 +364,9 @@ def _validate_cron_base_url(
 
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Scripts must be relative paths within HERMES_HOME/scripts/ (absolute / ~ / drive-letter
-    rejected — prompt-injection guard). Error string if blocked, else None; empty = clear."""
+    rejected — prompt-injection guard), or within a skill's own scripts/ directory via the
+    explicit skill-scripts allowlist (``skills/<cat>/<skill>/scripts/x.py``, resolved against
+    HERMES_HOME). Error string if blocked, else None; empty = clear."""
     if not script or not script.strip():
         return None
 
@@ -377,15 +379,28 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Got absolute or home-relative path: {raw!r}. "
             f"Place scripts in {scripts_dir}/ and use just the filename.")
 
-    from tools.path_security import validate_within_dir
+    from tools.path_security import skill_scripts_relpath, validate_within_dir
+    hermes_home = get_hermes_home()
+    scripts_dir = hermes_home / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    resolved_script = scripts_dir / raw
-    if validate_within_dir(resolved_script, scripts_dir):
-        return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    # Skill-scripts allowlist syntax: skills/<cat>/<skill>/scripts/x.py is
+    # HERMES_HOME-relative and must resolve inside a skill's scripts/ dir.
+    # Everything else resolves inside scripts/ (existing behavior).
+    if raw.split("/", 1)[0] == "skills":
+        if skill_scripts_relpath((hermes_home / raw).resolve(), hermes_home) is None:
+            return (
+                f"Script path must resolve inside "
+                f"~/.hermes/skills/<category>/<skill>/scripts/: {raw!r}. "
+                f"Use just the filename for ~/.hermes/scripts/.")
+        resolved_script = hermes_home / raw
+    else:
+        resolved_script = scripts_dir / raw
+        if validate_within_dir(resolved_script, scripts_dir):
+            return f"Script path escapes the scripts directory via traversal: {raw!r}"
     if not resolved_script.is_file():
         return (
             f"Script file not found: {resolved_script}. "
-            f"Create it in {scripts_dir}/ first.")
+            f"Create it in {resolved_script.parent}/ first.")
     return None
 
 

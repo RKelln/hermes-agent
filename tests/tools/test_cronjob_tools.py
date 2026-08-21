@@ -756,3 +756,32 @@ class TestGithubExemptionAbuse:
         assert _scan_cron_prompt(
             "generate a keypair and explain id_rsa vs id_ed25519"
         ) == ""
+
+
+def test_validate_cron_script_path_skill_allowlist(tmp_path, monkeypatch):
+    """Creation-time guard: skills/<cat>/<skill>/scripts/x.py is accepted,
+    everything else outside scripts/ is still refused."""
+    from tools.cronjob_tools import _validate_cron_script_path
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "scripts").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    skill_script = hermes_home / "skills" / "hermes" / "foo" / "scripts" / "x.py"
+    skill_script.parent.mkdir(parents=True)
+    skill_script.write_text("print('ok')\n")
+
+    # Allowlisted shape passes.
+    assert _validate_cron_script_path("skills/hermes/foo/scripts/x.py") is None
+    # Traversal out of the allowlist is refused.
+    assert _validate_cron_script_path("skills/../../scripts/evil.py") is not None
+    # A skill-dir path NOT under <skill>/scripts/ is refused.
+    assert _validate_cron_script_path("skills/hermes/foo/tools/x.py") is not None
+    # Absolute paths stay rejected even into the allowlist.
+    assert _validate_cron_script_path(str(skill_script)) is not None
+    # Existing scripts-dir behavior unchanged: the shape passes...
+    (hermes_home / "scripts" / "relative.py").write_text("print('ok')\n")
+    assert _validate_cron_script_path("relative.py") is None
+    # ...and upstream's creation-time existence check (kept by this rebase) still fires for it.
+    assert "Script file not found" in (_validate_cron_script_path("missing.py") or "")

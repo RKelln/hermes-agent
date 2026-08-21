@@ -137,6 +137,67 @@ class TestRunJobScript:
         assert "Script not found" in output
         assert str(cron_env / "scripts") in output
 
+    def test_skill_script_relative_path_allowed(self, cron_env):
+        """A script inside a skill's scripts/ dir runs via the allowlist
+        syntax skills/<cat>/<skill>/scripts/x.py (HERMES_HOME-relative)."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "skills" / "hermes" / "foo" / "scripts" / "hello.py"
+        script.parent.mkdir(parents=True)
+        script.write_text('print("hello from skill script")\n')
+
+        success, output = _run_job_script("skills/hermes/foo/scripts/hello.py")
+        assert success is True
+        assert output == "hello from skill script"
+
+    def test_skill_script_absolute_path_allowed(self, cron_env):
+        """An absolute path into a skill's scripts/ dir is also allowlisted
+        (defense for hand-edited jobs.json — creation-time still rejects)."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "skills" / "hermes" / "foo" / "scripts" / "hello.py"
+        script.parent.mkdir(parents=True)
+        script.write_text('print("hello abs")\n')
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "hello abs"
+
+    def test_skill_script_symlink_escape_blocked(self, cron_env):
+        """A symlink inside a skill's scripts/ dir pointing OUTSIDE
+        HERMES_HOME must be refused — the allowlist checks the RESOLVED path."""
+        from cron.scheduler_script import _run_job_script
+
+        outside = cron_env.parent / "outside.py"
+        outside.write_text('print("evil")\n')
+        link = cron_env / "skills" / "hermes" / "foo" / "scripts" / "link.py"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(outside)
+
+        success, output = _run_job_script(str(link))
+        assert success is False
+        assert "outside the scripts directory" in output
+
+    def test_skill_script_not_under_scripts_subdir_blocked(self, cron_env):
+        """A path inside a skill but NOT under <skill>/scripts/ must be
+        refused (the allowlist is exactly skills/<cat>/<skill>/scripts/)."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "skills" / "hermes" / "foo" / "tools" / "x.py"
+        script.parent.mkdir(parents=True)
+        script.write_text('print("nope")\n')
+
+        success, output = _run_job_script(str(script))
+        assert success is False
+        assert "outside the scripts directory" in output
+
+    def test_skill_script_relative_traversal_blocked(self, cron_env):
+        """skills/... syntax must not escape HERMES_HOME via .. components."""
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script("skills/../../scripts/evil.py")
+        assert success is False
+        assert "outside the scripts directory" in output
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
