@@ -1364,12 +1364,22 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     from agent.memory_manager import inject_memory_provider_tools
     inject_memory_provider_tools(agent)
 
-
 def _apply_agent_section(agent, _agent_cfg):
-    # Skills config: nudge interval for skill creation reminders
+    # Skills config: nudge interval for skill creation reminders.
+    # skip_background_review=True (cron) suppresses the end-of-turn review
+    # fork entirely (turn_finalizer), so arming the skill nudge there is
+    # pointless — the trigger could never act, only tick counters. Mirror
+    # the memory-nudge gating: keep the interval at 0 for such sessions and
+    # read the configured value only when reviews can actually spawn.
     agent._skill_nudge_interval = 10
-    with suppress(Exception):
-        agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
+    if getattr(agent, "skip_background_review", False):
+        agent._skill_nudge_interval = 0
+    else:
+        try:
+            skills_config = _agent_cfg.get("skills", {})
+            agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        except Exception:
+            pass
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
     agent.budget_warning_ratio = normalize_budget_warning_ratio(

@@ -136,3 +136,36 @@ def test_persistence_failure_error_fallback_is_pinned_and_leaves_final_response_
     assert f"`hermes {selector}doctor`" in result["error"]
     assert agent._sync_external_memory_for_turn.call_args.kwargs["final_response"] == ""
     agent._spawn_background_review.assert_not_called()
+
+
+def test_skill_nudge_disabled_when_skip_background_review() -> None:
+    """skip_background_review=True (cron) must NOT arm the skill nudge.
+
+    The trigger could never act (the review fork is suppressed), so the
+    interval must stay 0 — arming it only ticks counters in cron sessions.
+    """
+    agent = _make_agent(skip_background_review=True)
+    assert agent._skill_nudge_interval == 0
+
+
+def test_skill_nudge_enabled_by_default() -> None:
+    """Normal sessions keep the skill nudge armed (default or configured)."""
+    agent = _make_agent(skip_background_review=False)
+    assert agent._skill_nudge_interval > 0
+
+
+def test_skill_nudge_config_not_read_when_skip_background_review(monkeypatch) -> None:
+    """With skip_background_review=True the skills config must be IGNORED
+    (interval stays 0); with the flag off the configured value is honored."""
+    import hermes_cli.config as hc
+
+    real = hc.load_config_readonly() or {}
+    merged = dict(real)
+    merged["skills"] = {"creation_nudge_interval": 42}
+    monkeypatch.setattr(hc, "load_config_readonly", lambda: merged)
+
+    disabled = _make_agent(skip_background_review=True)
+    assert disabled._skill_nudge_interval == 0
+
+    enabled = _make_agent(skip_background_review=False)
+    assert enabled._skill_nudge_interval == 42
