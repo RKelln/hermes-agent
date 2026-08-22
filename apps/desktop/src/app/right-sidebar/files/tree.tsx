@@ -12,7 +12,7 @@ import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-statu
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
-import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
+import { $fileMenuClosedAt, FileEntryContextMenu, FILE_MENU_ACTIVATE_SUPPRESS_MS, InlineRenameInput, isRenameShortcut } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
@@ -150,8 +150,15 @@ export function ProjectTree({
     (node: NodeApi<TreeNode>) => {
       // arborist fires onActivate on click/dblclick/Enter — independent of the
       // row's own handlers. Suppress it for the row being renamed so the
-      // context-menu "Rename" (and its fall-through) can't open the preview.
-      if (node.data && !node.data.isDirectory && $renamingPath.get() !== node.data.id) {
+      // context-menu "Rename" (and its fall-through) can't open the preview —
+      // and for a short window after the file menu closes, whose fall-through
+      // click would otherwise open the preview on top of the menu action.
+      if (
+        node.data &&
+        !node.data.isDirectory &&
+        $renamingPath.get() !== node.data.id &&
+        Date.now() - $fileMenuClosedAt.get() > FILE_MENU_ACTIVATE_SUPPRESS_MS
+      ) {
         onPreviewFile?.(node.data.id)
       }
     },

@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
+import { atom } from 'nanostores'
 
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -30,6 +31,8 @@ import {
 } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
 
+import { useFileActionContributions } from './file-menu-contrib'
+
 const IS_WIN = typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent || '')
 
 // F2 starts a rename anywhere; Enter starts one when a row is focused (VS Code).
@@ -54,6 +57,13 @@ interface FileEntryContextMenuProps {
   relativeTo?: null | string
 }
 
+/** Set when the file context menu closes (any item or dismiss). The file tree
+ *  suppresses row activation for a short window afterwards, so the fall-through
+ *  click from the menu close cannot open the default preview on top of the
+ *  action the user just chose (e.g. "Open in Markdown Studio"). */
+export const $fileMenuClosedAt = atom(0)
+export const FILE_MENU_ACTIVATE_SUPPRESS_MS = 400
+
 /** Right-click menu shared by both file trees (browser + review/git). */
 export function FileEntryContextMenu({ children, isDirectory, name, path, relativeTo }: FileEntryContextMenuProps) {
   const { t } = useI18n()
@@ -65,13 +75,25 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
   const remoteDownload = shouldOfferRemoteFileDownload(isDirectory)
   const target: FileActionTarget = { isDirectory, name, path }
   const revealLabel = pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)
+  // Plugin-contributed actions for this specific file (e.g. "open in an
+  // external editor"). Evaluated per right-click — the predicate sees the
+  // live path and directory flag.
+  const fileActions = useFileActionContributions().filter(action => action.matches(path, isDirectory))
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       {/* Don't restore focus to the row on close: "Rename" mounts an autofocused
           inline input, and the default focus-return would blur it immediately. */}
-      <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
+      <ContextMenuContent
+        onCloseAutoFocus={event => {
+          event.preventDefault()
+          // The menu close leaves a fall-through click on the row; arborist
+          // then fires onActivate and opens the default preview on top of the
+          // action just taken. Stamp the close so the tree can suppress it.
+          $fileMenuClosedAt.set(Date.now())
+        }}
+      >
         {localFs && (
           <>
             <ContextMenuItem onSelect={() => void revealFile(path)}>{revealLabel}</ContextMenuItem>
@@ -88,6 +110,16 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
           <>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => void downloadRemoteFile(path)}>{m.download}</ContextMenuItem>
+          </>
+        )}
+        {fileActions.length > 0 && (
+          <>
+            <ContextMenuSeparator />
+            {fileActions.map(action => (
+              <ContextMenuItem key={action.key} onSelect={() => void action.run(path)}>
+                {action.label}
+              </ContextMenuItem>
+            ))}
           </>
         )}
         {localFs && (

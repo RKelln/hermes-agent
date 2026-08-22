@@ -209,6 +209,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Status bar | `STATUSBAR_AREAS.left` / `.right` | `render` (or `data` as `StatusbarItem`) |
 | Title bar | `TITLEBAR_AREAS.left` / `.center` / `.right` | `data` as `TitlebarTool`, or a mount-scoped `<Contribute>` |
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
+| File context menu | `FILE_ACTIONS_AREA` | `data: FileActionContribution` |
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
@@ -330,6 +331,30 @@ ctx.registerMany([
 ```
 
 Keybinds are user-rebindable in settings; `defaults` is just the initial binding.
+
+### File context-menu actions
+
+A `fileActions` contribution adds an item to the right-click menu of the Files
+pane (and the review/git tree, which shares the same menu component). The
+`matches` predicate runs per right-click with the live path, so an action can
+appear only for the files it targets:
+
+```javascript
+import { FILE_ACTIONS_AREA } from '@hermes/plugin-sdk'
+
+ctx.register({
+  id: 'open-editor',
+  area: FILE_ACTIONS_AREA,
+  data: {
+    id: 'my-plugin.openInEditor',
+    label: 'Open in My Editor',
+    matches: (path, isDirectory) => !isDirectory && /\.(md|markdown)$/i.test(path),
+    run: path => host.navigate('/my-editor?path=' + encodeURIComponent(path))
+  }
+})
+```
+
+The app names no plugin — labels and behavior belong to the extension.
 
 ### Themes
 
