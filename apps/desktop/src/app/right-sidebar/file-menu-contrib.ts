@@ -1,10 +1,9 @@
 /**
  * File context-menu contribution surface — `fileActions` data contributions
- * become items in the right-click menu of the Files pane (and the
- * review/git tree, which shares FileEntryContextMenu). Each action declares
- * a label, a predicate over the right-clicked file, and a `run(path)`
- * handler. Contributions register once at boot; the predicate is evaluated
- * per right-click, so it can match on the live path.
+ * become items in the right-click menu of the Files pane tree. Each action
+ * declares a label, a predicate over the right-clicked file, and a
+ * `run(path)` handler. Contributions register once at boot; the predicate is
+ * evaluated per render, so it can match on the live path.
  */
 
 import { useContributions } from '@/contrib/react/use-contributions'

@@ -335,9 +335,8 @@ Keybinds are user-rebindable in settings; `defaults` is just the initial binding
 ### File context-menu actions
 
 A `fileActions` contribution adds an item to the right-click menu of the Files
-pane (and the review/git tree, which shares the same menu component). The
-`matches` predicate runs per right-click with the live path, so an action can
-appear only for the files it targets:
+pane tree. The `matches` predicate runs per render with the live path, so an
+action can appear only for the files it targets:
 
 ```javascript
 import { FILE_ACTIONS_AREA } from '@hermes/plugin-sdk'

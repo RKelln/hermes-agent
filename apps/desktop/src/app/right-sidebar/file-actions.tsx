@@ -64,7 +64,7 @@ interface FileEntryContextMenuProps {
 export const $fileMenuClosedAt = atom(0)
 export const FILE_MENU_ACTIVATE_SUPPRESS_MS = 400
 
-/** Right-click menu shared by both file trees (browser + review/git). */
+/** Right-click menu for the Files pane file tree. */
 export function FileEntryContextMenu({ children, isDirectory, name, path, relativeTo }: FileEntryContextMenuProps) {
   const { t } = useI18n()
   const m = t.fileMenu
@@ -76,8 +76,8 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
   const target: FileActionTarget = { isDirectory, name, path }
   const revealLabel = pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)
   // Plugin-contributed actions for this specific file (e.g. "open in an
-  // external editor"). Evaluated per right-click — the predicate sees the
-  // live path and directory flag.
+  // external editor"). Evaluated per render — the predicate sees the live
+  // path and directory flag.
   const fileActions = useFileActionContributions().filter(action => action.matches(path, isDirectory))
 
   return (
@@ -88,8 +88,9 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
       <ContextMenuContent
         onCloseAutoFocus={event => {
           event.preventDefault()
-          // The menu close leaves a fall-through click on the row; arborist
-          // then fires onActivate and opens the default preview on top of the
+          // The menu close leaves a fall-through click on the row; combined
+          // with the prior selection click the browser reports it as a
+          // double-click, which would open the default preview on top of the
           // action just taken. Stamp the close so the tree can suppress it.
           $fileMenuClosedAt.set(Date.now())
         }}
