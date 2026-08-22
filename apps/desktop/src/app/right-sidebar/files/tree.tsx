@@ -332,7 +332,18 @@ function ProjectTreeRow({
       onDoubleClick={event => {
         event.stopPropagation()
 
-        if (!isFolder && !isPlaceholder && $renamingPath.get() !== node.data.id) {
+        // The context-menu close leaves a fall-through click on the row; if
+        // the user had just selected the row (click #1), the browser reports
+        // it as a double-click and this handler would open the default
+        // preview on top of the menu action (the arborist onActivate path
+        // never sees mouse clicks here — the row stops propagation first).
+        // Same suppression window as handleActivate.
+        if (
+          !isFolder &&
+          !isPlaceholder &&
+          $renamingPath.get() !== node.data.id &&
+          Date.now() - $fileMenuClosedAt.get() > FILE_MENU_ACTIVATE_SUPPRESS_MS
+        ) {
           onPreviewFile?.(node.data.id)
         }
       }}
