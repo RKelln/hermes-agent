@@ -3,6 +3,7 @@
 import contextlib
 import contextvars
 import itertools
+from datetime import datetime, timezone
 import json
 import os
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -12,6 +13,9 @@ import pytest
 from cron.scheduler import (
     SILENT_MARKER,
     _build_job_prompt,
+    _build_run_stats_section,
+    _estimate_cost_usd,
+    _fmt_usd,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
     _run_cron_cleanup_with_timeout,
@@ -2693,3 +2697,126 @@ class TestFailureStreakNudge:
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""
 
+class TestEstimateCost:
+    """Cost estimation for the Run Statistics line and run metadata."""
+
+    def _ts(self, year, month, day, hour, minute=0):
+        return datetime(year, month, day, hour, minute, tzinfo=timezone.utc).timestamp()
+
+    def test_offpeak_flash_rate(self):
+        # 1M fresh input, no cache, no output — Mon 12:00 UTC (off-peak)
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        assert _estimate_cost_usd(tokens, "deepseek-flash", self._ts(2026, 9, 14, 12), None) == 0.15
+
+    def test_peak_flash_doubles(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        # Mon 02:00 UTC falls in the 01:00-04:00 peak window → 2x
+        assert _estimate_cost_usd(tokens, "deepseek-flash", self._ts(2026, 9, 14, 2), None) == 0.30
+
+    def test_weekend_offpeak_even_in_peak_hours(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        # Sunday 02:00 UTC — weekend hours are off-peak regardless of clock time
+        assert _estimate_cost_usd(tokens, "deepseek-flash", self._ts(2026, 9, 13, 2), None) == 0.15
+
+    def test_cache_and_output_included(self):
+        tokens = {"input_tokens": 100_000, "cache_read_tokens": 900_000, "completion_tokens": 50_000}
+        # (100k*0.15 + 900k*0.003 + 50k*0.60) / 1M = 0.015 + 0.0027 + 0.03 = 0.0477
+        assert _estimate_cost_usd(tokens, "deepseek-flash", self._ts(2026, 9, 14, 12), None) == pytest.approx(0.0477)
+
+    def test_legacy_ids_and_vendor_prefix_price_as_flash(self):
+        """A vendor rename must not silently disable the estimate (2026-09-11)."""
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        ts = self._ts(2026, 9, 14, 12)  # Mon 12:00 UTC, off-peak
+        for name in ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash",
+                     "deepseek-v4-flash-0731", "deepseek-chat", "deepseek-reasoner",
+                     "deepseek/deepseek-flash", "DeepSeek-Flash"):
+            assert _estimate_cost_usd(tokens, name, ts, None) == 0.15, name
+
+    def test_pro_rates(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        assert _estimate_cost_usd(tokens, "deepseek-v4-pro", self._ts(2026, 9, 14, 12), None) == 0.66
+        assert _estimate_cost_usd(tokens, "deepseek-v4-pro", self._ts(2026, 9, 14, 2), None) == 1.32
+
+    def test_unknown_model_returns_none(self):
+        assert _estimate_cost_usd({}, "some-other-model", self._ts(2026, 9, 14, 12), None) is None
+        assert _estimate_cost_usd({}, None, self._ts(2026, 9, 14, 12), None) is None
+
+    def test_config_override_wins(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        cfg = {"deepseek-v4-flash": {"in": 0.5}}
+        assert _estimate_cost_usd(tokens, "deepseek-v4-flash", self._ts(2026, 9, 14, 12), cfg) == 0.5
+
+    def test_config_alias_key_matches_any_id_in_the_group(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        # config keyed by the canonical id serves a run reporting the legacy id…
+        assert _estimate_cost_usd(
+            tokens, "deepseek-v4-flash", self._ts(2026, 9, 14, 12), {"deepseek-flash": {"in": 0.5}}) == 0.5
+        # …and the reverse.
+        assert _estimate_cost_usd(
+            tokens, "deepseek-flash", self._ts(2026, 9, 14, 12), {"deepseek-v4-flash": {"in": 0.7}}) == 0.7
+
+    def test_config_windowed_schedule(self):
+        # Custom schedule: weekend 02:00-03:00 UTC is expensive, everything else cheap.
+        cfg = {"deepseek-v4-flash": [
+            {"days": "sat,sun", "hours": "02:00-03:00", "in": 9.99, "cache_read": 0.0, "out": 0.0},
+            {"in": 0.15, "cache_read": 0.003, "out": 0.60},
+        ]}
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        assert _estimate_cost_usd(tokens, "deepseek-v4-flash", self._ts(2026, 9, 13, 2, 30), cfg) == pytest.approx(9.99)
+        # Same minute on Monday falls through to the catch-all.
+        assert _estimate_cost_usd(tokens, "deepseek-v4-flash", self._ts(2026, 9, 14, 2, 30), cfg) == pytest.approx(0.15)
+
+    def test_malformed_config_returns_none_not_crash(self):
+        tokens = {"input_tokens": 1_000_000, "cache_read_tokens": 0, "completion_tokens": 0}
+        cfg = {"deepseek-v4-flash": "garbage"}
+        assert _estimate_cost_usd(tokens, "deepseek-v4-flash", self._ts(2026, 9, 14, 12), cfg) is None
+        cfg2 = {"deepseek-v4-flash": [{"days": 42}]}
+        assert _estimate_cost_usd(tokens, "deepseek-v4-flash", self._ts(2026, 9, 14, 12), cfg2) is None
+
+    def test_fmt_usd(self):
+        assert _fmt_usd(1.2) == "$1.20"
+        assert _fmt_usd(0.05) == "$0.05"
+        assert _fmt_usd(0.0042) == "$0.0042"
+
+    def test_stats_section_appends_cost(self):
+        section = _build_run_stats_section(
+            2.9, {"input_tokens": 10000, "cache_read_tokens": 4100, "output_tokens": 78}, None, 0.0123
+        )
+        assert "≈ $0.01" in section
+        # cost omitted when not provided
+        section2 = _build_run_stats_section(2.9, {"input_tokens": 10000})
+        assert "≈" not in section2
+
+
+class TestBuildRunStatsSection:
+    def test_all_keys_emitted_including_zeroes(self):
+        tokens = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        section = _build_run_stats_section(10.5, tokens)
+        assert "### Run Statistics" in section
+        assert "10.5s" in section
+        assert "150 tok" in section
+        assert "in:100" in section
+        assert "out:50" in section
+        assert "cache" not in section
+        assert "think" not in section
+
+    def test_cache_read_shown_when_nonzero(self):
+        tokens = {"input_tokens": 20000, "output_tokens": 100, "total_tokens": 20100,
+                  "cache_read_tokens": 5000}
+        section = _build_run_stats_section(2.0, tokens)
+        assert "5k=20% cache" in section
+
+    def test_reasoning_shown_when_nonzero(self):
+        tokens = {"input_tokens": 200, "output_tokens": 10000, "total_tokens": 10200,
+                  "reasoning_tokens": 1200}
+        section = _build_run_stats_section(2.0, tokens)
+        assert "1.2k=11% think" in section

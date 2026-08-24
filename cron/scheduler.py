@@ -18,6 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -2470,12 +2471,14 @@ def _build_run_stats_section(
     elapsed_seconds: float,
     tokens: dict[str, int],
     blocked_calls: Optional[dict[str, int]] = None,
+    cost_usd: Optional[float] = None,
 ) -> str:
     """Build a compact ``### Run Statistics`` line for cron output docs.
 
     Collapses redundant fields (input≈prompt, output≈completion) and omits
     zero-valued cache-write.  Cache-read and reasoning tokens appear inline
     as parenthetical annotations with their percentage of total in/out.
+    ``cost_usd`` is an ESTIMATE (never a bill) and is appended when available.
     """
     _in = tokens.get("input_tokens", 0)
     _out = tokens.get("output_tokens", 0)
@@ -2505,13 +2508,14 @@ def _build_run_stats_section(
     if blocked_calls:
         _blocked_parts = [f"{count} {name}" for name, count in sorted(blocked_calls.items())]
     _blocked_str = f" — blocked: {', '.join(_blocked_parts)}" if _blocked_parts else ""
+    _cost_str = f" ≈ {_fmt_usd(cost_usd)}" if cost_usd is not None else ""
 
     return (
         f"### Run Statistics\n"
         f"{elapsed_seconds:.1f}s · {_human_tok(_total)} tok = "
         f"in:{_human_tok(_in_total)}{_cache_str}, "
         f"out:{_human_tok(_out_total)}{_reason_str}"
-        f"{_blocked_str}\n"
+        f"{_blocked_str}{_cost_str}\n"
     )
 
 
@@ -2524,6 +2528,219 @@ def _human_tok(n: int) -> str:
         s = f"{n / 1_000:.1f}k"
         return s.replace(".0k", "k")
     return str(n)
+
+
+# ── Estimated cost (estimate only, never a bill) ──────────────────────
+# Per-model rate SCHEDULES, USD per 1M tokens. Each schedule is an ordered
+# list of entries; the FIRST entry whose window matches the run timestamp
+# wins. An entry with no days/hours matches any time (the catch-all /
+# default rate). No peak-vs-off-peak multiplier is assumed anywhere — rate
+# cards change, so each window carries its own explicit rates.
+#
+# DeepSeek list rates (checked against the official pricing page
+# 2026-09-12): flash peak (Mon-Fri 01:00-04:00 & 06:00-10:00 UTC)
+# 0.30 / 0.006 / 1.20, off-peak 0.15 / 0.003 / 0.60; pro peak
+# 1.32 / 0.044 / 3.96, off-peak 0.66 / 0.022 / 1.98. Weekends are
+# off-peak all day. These built-ins are a starting point, not a contract.
+#
+# Rows are keyed by the alias GROUP of ids that bill at those rates
+# (canonical id first), never by a single id. DeepSeek renamed Flash on
+# 2026-09-11: `deepseek-flash` is the id to use now; the retired
+# `deepseek-v4-flash` / `-vision-exp` ids and the folded `deepseek-chat` /
+# `deepseek-reasoner` aliases are served by V4.1-Flash at the Flash price —
+# which is also a CUT (0.22/0.007/0.66 -> 0.15/0.003/0.60). An id-keyed
+# table stops estimating the day a vendor renames, and does it silently:
+# from 2026-09-11 every cron run reported ``estimated_cost_usd: null``
+# while the Run Statistics section kept rendering normally. New ids for an
+# existing model belong in that model's group.
+#
+# Override per model via config.yaml (replaces that model's schedule; the
+# key may be any id of the group):
+#   cron:
+#     pricing:
+#       deepseek-flash:
+#         - {days: "mon-fri", hours: "01:00-04:00,06:00-10:00", in: 0.30, cache_read: 0.006, out: 1.20}
+#         - {in: 0.15, cache_read: 0.003, out: 0.60}   # catch-all
+# days: "mon-fri" | "sat,sun" | "*" (3-letter names, comma lists, ranges,
+# wrap-around like fri-mon); hours: "01:00-04:00,06:00-10:00" | "*" ([start,end)
+# 24h ranges); tz: optional IANA name, default UTC. A plain dict instead of
+# a list = a single catch-all entry. Missing rate keys inherit the built-in
+# catch-all; a malformed config disables the estimate for that model (it
+# must never crash a run — cost is cosmetic).
+_DEFAULT_PRICING_SCHEDULES: dict[tuple[str, ...], list[dict]] = {
+    ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash",
+     "deepseek-v4-flash-0731", "deepseek-v4-flash-vision-exp",
+     "deepseek-chat", "deepseek-reasoner"): [
+        {"days": "mon-fri", "hours": "01:00-04:00,06:00-10:00", "tz": "UTC",
+         "in": 0.30, "cache_read": 0.006, "out": 1.20},
+        {"in": 0.15, "cache_read": 0.003, "out": 0.60},
+    ],
+    ("deepseek-v4-pro", "deepseek-v4-pro-0813"): [
+        {"days": "mon-fri", "hours": "01:00-04:00,06:00-10:00", "tz": "UTC",
+         "in": 1.32, "cache_read": 0.044, "out": 3.96},
+        {"in": 0.66, "cache_read": 0.022, "out": 1.98},
+    ],
+}
+
+_WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _parse_days(spec: str) -> Optional[set]:
+    """Compile a days spec; None = any day."""
+    if not spec or spec.strip() == "*":
+        return None
+    days: set = set()
+    for part in spec.split(","):
+        part = part.strip().lower()
+        if "-" in part:
+            a, b = part.split("-", 1)
+            start_d, end_d = _WEEKDAYS[a], _WEEKDAYS[b]
+            if start_d <= end_d:
+                days.update(range(start_d, end_d + 1))
+            else:  # wrap-around (e.g. fri-mon)
+                days.update(range(start_d, 7))
+                days.update(range(0, end_d + 1))
+        else:
+            days.add(_WEEKDAYS[part])
+    return days
+
+
+def _parse_hours(spec: str) -> Optional[list]:
+    """Compile an hours spec into [start,end) minute windows; None = any hour."""
+    if not spec or spec.strip() == "*":
+        return None
+    windows = []
+    for part in spec.split(","):
+        part = part.strip()
+        a, b = part.split("-", 1)
+        ha = int(a.split(":")[0]) * 60 + int(a.split(":")[1])
+        hb = int(b.split(":")[0]) * 60 + int(b.split(":")[1])
+        windows.append((ha, hb))
+    return windows
+
+
+def _normalize_pricing_id(model: str) -> str:
+    """Bare lowercased model id used for rate-table matching (``vendor/`` stripped)."""
+    name = (model or "").strip()
+    if "/" in name:
+        name = name.split("/", 1)[1]
+    return name.lower()
+
+
+def _pricing_group(model: str) -> Optional[tuple]:
+    """Built-in alias group whose rows bill ``model`` (case/prefix blind), or None."""
+    key = _normalize_pricing_id(model)
+    if not key:
+        return None
+    for group in _DEFAULT_PRICING_SCHEDULES:
+        if key in group:
+            return group
+    return None
+
+
+def _schedule_for_model(model: str, pricing_cfg: Optional[dict]) -> Optional[list]:
+    """Compiled rate schedule for ``model``, or None (unknown model / bad config).
+
+    Resolution is case-insensitive, ignores a ``vendor/`` prefix, and walks the
+    built-in alias group, so a renamed-but-equivalent id still prices (see the
+    ``_DEFAULT_PRICING_SCHEDULES`` note). Config overrides may be keyed by any
+    id of the group; the raw name as configured wins first.
+    """
+    try:
+        group = _pricing_group(model)
+        builtin = _DEFAULT_PRICING_SCHEDULES.get(group) if group else None
+        builtin_catchall = builtin[-1] if builtin else {}
+
+        cfg_entries = None
+        if isinstance(pricing_cfg, dict):
+            candidates = [model, _normalize_pricing_id(model)]
+            if group:
+                candidates.extend(group)
+            for candidate in candidates:
+                if candidate and candidate in pricing_cfg:
+                    cfg_entries = pricing_cfg[candidate]
+                    break
+
+        if cfg_entries is None:
+            if builtin is None:
+                return None
+            entries = builtin
+        elif isinstance(cfg_entries, dict):
+            entries = [cfg_entries]  # flat dict = single catch-all entry
+        else:
+            entries = cfg_entries
+        compiled = []
+        for e in entries:
+            if not isinstance(e, dict):
+                return None
+            compiled.append({
+                "in": float(e.get("in", builtin_catchall.get("in", 0.0))),
+                "cache_read": float(e.get("cache_read", builtin_catchall.get("cache_read", 0.0))),
+                "out": float(e.get("out", builtin_catchall.get("out", 0.0))),
+                "_days": _parse_days(str(e.get("days") or "")),
+                "_hours": _parse_hours(str(e.get("hours") or "")),
+                "tz": e.get("tz"),
+            })
+        return compiled
+    except Exception:
+        return None
+
+
+def _entry_matches(entry: dict, dt: datetime) -> bool:
+    """True when a schedule entry's window contains ``dt`` (tz-aware)."""
+    tz_name = entry.get("tz") or "UTC"
+    try:
+        local = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local = dt
+    days = entry.get("_days")
+    if days is not None and local.weekday() not in days:
+        return False
+    hours = entry.get("_hours")
+    if hours is not None:
+        now_min = local.hour * 60 + local.minute
+        if not any(a <= now_min < b for a, b in hours):
+            return False
+    return True
+
+
+def _estimate_cost_usd(
+    tokens: dict, model: Optional[str], ts: float, pricing_cfg: Optional[dict]
+) -> Optional[float]:
+    """Estimate a run's USD cost from token counts (estimate only, not billed).
+
+    Fresh input + cache-read + completion (reasoning is billed as output
+    tokens). The first schedule entry whose window matches ``ts`` provides
+    the rates. Returns None when the model has no rates or the config is
+    malformed — cost must never crash a run.
+    """
+    if not model:
+        return None
+    schedule = _schedule_for_model(model, pricing_cfg)
+    if schedule is None:
+        # Greppable trace: a silently rate-less model is exactly how the
+        # estimate died on 2026-09-11 (vendor renamed the id under a keyed
+        # table). `grep 'no rate schedule' agent.log` finds the next one.
+        logger.info("cron cost: no rate schedule for model %r — cost omitted", model)
+        return None
+    dt = datetime.fromtimestamp(ts, timezone.utc)
+    rates = next((e for e in schedule if _entry_matches(e, dt)), None)
+    if rates is None:
+        return None
+    _in = int(tokens.get("input_tokens") or 0)
+    _cache = int(tokens.get("cache_read_tokens") or 0)
+    _out = int(tokens.get("completion_tokens") or 0) or int(tokens.get("output_tokens") or 0)
+    total = (_in * rates["in"] + _cache * rates["cache_read"] + _out * rates["out"]) / 1_000_000.0
+    return round(total, 6)
+
+
+def _fmt_usd(cost: float) -> str:
+    """Compact USD formatting: $1.20, $0.05, $0.0042."""
+    if cost >= 100:
+        return f"${cost:,.0f}"
+    if cost >= 0.01:
+        return f"${cost:.2f}"
+    return f"${cost:.4f}"
 
 
 def run_job(
@@ -2630,7 +2847,10 @@ def run_job(
         # because it touches the counters, not the message history. (See
         # t_28ff025e.)
 
-        _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens, _blocked_calls)
+        _run_ts = time.time()
+        _pricing_cfg = _cfg.get("pricing") if isinstance(_cfg, dict) else None
+        _cost_usd = _estimate_cost_usd(_job_tokens, model, _run_ts, _pricing_cfg)
+        _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens, _blocked_calls, _cost_usd)
         # Insert the stats block between the doc header fields and the prompt
         # section (_run_doc_header always emits exactly one "\n\n## Prompt").
         _output_head = _run_doc_header(job, job_name, job_id, prompt).replace(
@@ -2647,6 +2867,8 @@ def run_job(
         _success_metadata: dict = {
             "duration_seconds": _job_elapsed,
             "tokens": _job_tokens,
+            "model": model or None,
+            "estimated_cost_usd": _cost_usd,
         }
         if _blocked_calls:
             _success_metadata["blocked_calls"] = _blocked_calls
@@ -2683,8 +2905,15 @@ def run_job(
                     _val = getattr(agent, _field, 0)
                     _fail_tokens[_field.replace("session_", "")] = int(_val) if _val else 0
         _fail_blocked = getattr(agent, "session_blocked_calls", None) or {}
+        _fail_cfg = locals().get("_cfg")
+        _fail_pricing_cfg = _fail_cfg.get("pricing") if isinstance(_fail_cfg, dict) else None
+        _fail_cost = (
+            _estimate_cost_usd(_fail_tokens, model or None, time.time(), _fail_pricing_cfg)
+            if _fail_elapsed is not None and model
+            else None
+        )
         _fail_stats = (
-            _build_run_stats_section(_fail_elapsed, _fail_tokens, _fail_blocked)
+            _build_run_stats_section(_fail_elapsed, _fail_tokens, _fail_blocked, _fail_cost)
             if _fail_elapsed is not None
             else ""
         )
