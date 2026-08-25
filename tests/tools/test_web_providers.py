@@ -529,3 +529,139 @@ class TestDisabledPluginDiagnostic:
         finally:
             restore()
 
+
+class TestStaleRegistrySelfHeal:
+    """A long-lived process (desktop SSH backend, gateway) discovers
+    plugins once at startup and never re-discovers while alive. A plugin
+    enabled in config AFTER startup stays unregistered — and delegate
+    children (in-process threads) inherit the stale registry, so
+    ``web_extract_tool`` fails with "no registered web extract provider
+    has that name" until the process restarts.
+
+    ``_ensure_web_plugins_loaded()`` must detect the missing configured
+    backend and force one re-discovery, bounded to once per config state
+    so a genuinely-broken selection (typo) doesn't reload plugins on every
+    call.
+    """
+
+    def _clear_registry(self):
+        from agent import web_search_registry
+
+        with web_search_registry._lock:
+            original = dict(web_search_registry._providers)
+            web_search_registry._providers.clear()
+
+        def _restore():
+            with web_search_registry._lock:
+                web_search_registry._providers.clear()
+                web_search_registry._providers.update(original)
+
+        return _restore
+
+    def test_force_rediscovers_missing_configured_backend(self, monkeypatch):
+        """Configured plugin backend absent from the registry triggers
+        exactly one force re-discovery, after which the provider resolves.
+        """
+        from tools import web_tools
+        from agent import web_search_registry
+        from agent.web_search_provider import WebSearchProvider
+
+        class FakeWebx(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "webx"
+
+            @property
+            def display_name(self) -> str:
+                return "Fake webx"
+
+            def is_available(self) -> bool:
+                return True
+
+            def supports_extract(self) -> bool:
+                return True
+
+        restore = self._clear_registry()
+        web_tools._last_web_force_reload_sig = None  # reset the guard
+        try:
+            # Config names a plugin backend (not a legacy built-in)...
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "webx"},
+            )
+            # ...but the registry is stale: webx never registered.
+            assert web_search_registry.get_provider("webx") is None
+
+            # The normal discovery pass does NOT register webx (stale
+            # long-lived process simulation); the FORCE pass does. The
+            # helper imports from hermes_cli.plugins inside the function
+            # body, so patch at the module — both call sites see it.
+            def _fake_discover(force=False):
+                if force:
+                    web_search_registry.register_provider(FakeWebx())
+
+            import hermes_cli.plugins as plugins_mod
+            monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", _fake_discover)
+
+            web_tools._ensure_web_plugins_loaded()
+
+            # The force pass registered it; the configured backend now resolves.
+            assert web_search_registry.get_provider("webx") is not None
+            assert web_tools._last_web_force_reload_sig is not None
+        finally:
+            restore()
+            web_tools._last_web_force_reload_sig = None
+
+    def test_no_force_when_backend_registered(self, monkeypatch):
+        """Healthy registry: configured backend resolves, no force pass."""
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        web_tools._last_web_force_reload_sig = None
+        try:
+            register_all_web_providers()
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "firecrawl"},
+            )
+            forced = []
+            import hermes_cli.plugins as plugins_mod
+            monkeypatch.setattr(
+                plugins_mod, "_ensure_plugins_discovered",
+                lambda force=False: forced.append(force),
+            )
+            web_tools._ensure_web_plugins_loaded()
+            assert not any(forced), "no force re-discovery when backend is healthy"
+        finally:
+            restore()
+            web_tools._last_web_force_reload_sig = None
+
+    def test_force_bounded_to_one_per_config_state(self, monkeypatch):
+        """A still-missing backend after force (typo, uninstalled) does not
+        reload plugins on every call: the (path, mtime, size) guard holds.
+        """
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        web_tools._last_web_force_reload_sig = None
+        try:
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "does-not-exist"},
+            )
+            import hermes_cli.plugins as plugins_mod
+            calls = []
+            monkeypatch.setattr(
+                plugins_mod, "_ensure_plugins_discovered",
+                lambda force=False: calls.append(force),
+            )
+            # First call: missing backend -> force once.
+            web_tools._ensure_web_plugins_loaded()
+            assert calls.count(True) == 1
+            # Second call (same config state): guard holds, no new force.
+            web_tools._ensure_web_plugins_loaded()
+            assert calls.count(True) == 1
+        finally:
+            restore()
+            web_tools._last_web_force_reload_sig = None
+

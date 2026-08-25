@@ -819,6 +819,17 @@ def _ensure_web_plugins_loaded() -> None:
     ``FIRECRAWL_API_KEY`` set. The symptom is a misleading "No web extract
     provider configured" error (issue #27580).
 
+    Long-lived processes (desktop SSH backends, the gateway, embedded
+    sessions) discover plugins once at startup and NEVER re-discover while
+    alive: ``discover_and_load()`` short-circuits on its ``_discovered``
+    flag. A plugin enabled in config after startup (or a backend swapped
+    mid-session) therefore stays unregistered — and delegate children, being
+    in-process threads, inherit the stale registry. When the CONFIGURED
+    backend is missing after the normal pass, force one re-discovery so the
+    process self-heals without a restart. Bounded to once per (config path,
+    mtime) so a genuinely-broken selection (typo) doesn't reload plugins on
+    every call.
+
     Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` exactly:
     the underlying discovery call is idempotent and cheap on subsequent
     invocations.
@@ -833,6 +844,55 @@ def _ensure_web_plugins_loaded() -> None:
         # configured" error this helper is meant to eliminate, with no
         # clue in normal logs about the real cause.
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
+
+    _self_heal_stale_web_registry()
+
+
+# (config_path, mtime_ns, size) — or the "<unreadable-config>" sentinel —
+# of the last force re-discovery attempt. Guards against reloading plugins
+# on every call when the configured backend is simply wrong (typo,
+# uninstalled plugin) or the config is unreadable.
+_last_web_force_reload_sig = None
+
+
+def _self_heal_stale_web_registry() -> None:
+    """Force one plugin re-discovery when the configured backend is missing.
+
+    The registry may predate a config change (long-lived process started
+    before a plugin was enabled). Detect: configured extract/search backend
+    names a provider that isn't registered. Then force re-discovery once
+    per config state — a fresh scan picks up newly-enabled plugins.
+    """
+    global _last_web_force_reload_sig
+    cfg = _load_web_config()
+    candidates = []
+    for key in ("extract_backend", "search_backend", "backend"):
+        name = (cfg.get(key) or "").lower().strip()
+        if name and name not in _LEGACY_WEB_BACKENDS:
+            candidates.append(name)
+    if not candidates:
+        return
+    if any(_registered_web_provider(name) is None for name in candidates):
+        # A configured plugin backend is missing from the registry.
+        from hermes_cli.config import get_config_path
+
+        try:
+            _st = get_config_path().stat()
+            sig = (str(get_config_path()), _st.st_mtime_ns, _st.st_size)
+        except OSError:
+            # Config unreadable (sandboxed home, mid-write) — use a
+            # process-lifetime sentinel so the "don't reload on every
+            # call" bound still holds without blocking the first heal.
+            sig = ("<unreadable-config>",)
+        if sig == _last_web_force_reload_sig:
+            return  # already forced for this config state — don't loop
+        _last_web_force_reload_sig = sig
+        try:
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered(force=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Web plugin force re-discovery failed (non-fatal): %s", exc)
 
 
 def web_search_tool(query: str, limit: int = 5) -> str:
