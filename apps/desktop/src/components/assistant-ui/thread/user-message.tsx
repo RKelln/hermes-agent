@@ -25,6 +25,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
+import { splitMemoryContext } from '@/lib/memory-context'
 import { $touchPointer, isTouchInteraction } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
@@ -420,6 +421,43 @@ function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
   return { bodyClamped, clampActive, clampInnerRef, expanded, setExpanded }
 }
 
+// Injected memory context (agent/memory_manager.py build_memory_context_block)
+// rides inside the user message as a fenced <memory-context> block. It is NOT
+// something the human typed — render it as a compact, expandable system-style
+// notice instead of letting it hide inside the clamped user bubble. Keyed off
+// the service's fence (provider-agnostic), not the "## Mnemosyne Context" header.
+const MemoryContextNote: FC<{
+  block: string
+  entryCount: number
+  tokenEstimate: number
+}> = ({ block, entryCount, tokenEstimate }) => (
+  <div
+    className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
+    data-slot="aui_memory-context-note"
+  >
+    <span className="flex items-center justify-center gap-1.5">
+      <span aria-hidden className="text-[0.8125rem] leading-none">
+        🧠
+      </span>
+      <span className="wrap-anywhere">
+        memory context
+        {entryCount > 0 ? ` · ${entryCount} ${entryCount === 1 ? 'entry' : 'entries'}` : ''} · ~{tokenEstimate} tokens
+      </span>
+    </span>
+    <details className="self-center">
+      <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+        show recalled memory
+      </summary>
+      <pre
+        className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
+        data-selectable-text="true"
+      >
+        {block}
+      </pre>
+    </details>
+  </div>
+)
+
 export const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
   onRequestRestoreConfirm?: (messageId: string, target: RestoreMessageTarget) => void
@@ -496,7 +534,12 @@ export const UserMessage: FC<{
     )
   }
 
-  const hasBody = messageText.trim().length > 0
+  // The backend memory service fences recalled memory inside the user message;
+  // split it out so the bubble shows only what the human typed and the recalled
+  // memory renders as its own note (with entry + token counts).
+  const memorySplit = splitMemoryContext(messageText)
+
+  const hasBody = memorySplit.userText.trim().length > 0
   const chipOnlyTurn = isChipOnlyTurn(hasBody, attachmentRefs)
   const isLatestUser = messageId === latestUserId
   const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
@@ -523,7 +566,7 @@ export const UserMessage: FC<{
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
       <div className="min-h-[1.25rem]" ref={clampInnerRef}>
-        <UserMessageText className="wrap-anywhere" text={messageText} />
+        <UserMessageText className="wrap-anywhere" text={memorySplit.userText} />
       </div>
     </div>
   ) : (
@@ -554,6 +597,13 @@ export const UserMessage: FC<{
         }
         messageId={messageId}
       >
+        {memorySplit.block && (
+          <MemoryContextNote
+            block={memorySplit.block}
+            entryCount={memorySplit.entryCount}
+            tokenEstimate={memorySplit.tokenEstimate}
+          />
+        )}
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <ReactionPicker
