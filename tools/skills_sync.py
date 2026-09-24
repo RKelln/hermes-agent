@@ -11,6 +11,7 @@ import os
 import shutil
 import stat
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,11 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
+
+# Stale manifest temp files older than this are swept at the start of every manifest
+# write (see _sweep_stale_manifest_temps). A live writer's temp exists for milliseconds,
+# so anything this old is an orphan from a writer killed between mkstemp and os.replace.
+_MANIFEST_TMP_STALE_SECONDS = 300
 
 # Import-time snapshots backing the call-time accessors: long-lived multi-profile runtimes
 # retarget HERMES_HOME after import, and frozen constants would resolve (and for
@@ -124,10 +130,45 @@ def _read_suppressed_names() -> set:
     return read_suppressed_names()
 
 
+def _sweep_stale_manifest_temps() -> int:
+    """Remove orphaned ``.bundled_manifest_*.tmp`` files older than a safe window.
+
+    Every write creates a temp and consumes it with ``os.replace`` milliseconds later, so
+    any matching temp still on disk past ``_MANIFEST_TMP_STALE_SECONDS`` is an orphan: its
+    writer died between creation and the replace (SIGKILL, crash, or an interpreter exit
+    that abandoned the daemon ``bundled-skills-sync`` thread). The age guard exists so a
+    slow concurrent writer's fresh temp is never touched. Best-effort only: unlink
+    failures are swallowed and never raise.
+    """
+    removed = 0
+    try:
+        cutoff = time.time() - _MANIFEST_TMP_STALE_SECONDS
+        for tmp in _manifest_file().parent.glob(".bundled_manifest_*.tmp"):
+            try:
+                if tmp.is_file() and tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    if removed:
+        logger.debug(
+            "Swept %d stale bundled-manifest temp file(s) from %s",
+            removed,
+            _manifest_file().parent,
+        )
+    return removed
+
+
 def _write_manifest(entries: Dict[str, str]):
-    """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
+    """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600).
+
+    Orphans left by writers killed between temp creation and the replace are swept first.
+    """
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(_manifest_file().parent)
+    _sweep_stale_manifest_temps()
     try:
         data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)
