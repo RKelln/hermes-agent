@@ -38,6 +38,33 @@ class TestReadWriteManifest:
         with patch("tools.skills_sync.MANIFEST_FILE", tmp_path / "nonexistent"):
             assert _read_manifest() == {}
 
+    def test_write_manifest_sweeps_orphaned_temps_but_spares_fresh_ones(self, tmp_path):
+        """A writer killed between mkstemp and os.replace leaves its temp behind forever.
+
+        Every manifest write sweeps those orphans, but must NOT touch a temp whose mtime
+        is still inside the safety window: that one may belong to a live concurrent writer
+        (the daemon ``bundled-skills-sync`` thread spawned on every CLI launch).
+        """
+        import os as _os
+        import time as _time
+
+        from tools.skills_sync import _MANIFEST_TMP_STALE_SECONDS
+
+        manifest_file = tmp_path / ".bundled_manifest"
+        orphan = tmp_path / ".bundled_manifest_orphan123.tmp"
+        fresh = tmp_path / ".bundled_manifest_live456.tmp"
+        orphan.write_text("abandoned mid-write")
+        fresh.write_text("mid-write right now")
+        stale_at = _time.time() - _MANIFEST_TMP_STALE_SECONDS - 60
+        _os.utime(orphan, (stale_at, stale_at))
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            _write_manifest({"alpha": "hash1"})
+
+        assert not orphan.exists(), "the orphaned temp should have been swept"
+        assert fresh.exists(), "a fresh temp may belong to a live writer and must survive"
+        assert manifest_file.exists(), "the manifest itself is still written"
+
     def test_reads_v1_lines_blanks_and_mixed_formats(self, tmp_path):
         manifest_file = tmp_path / ".bundled_manifest"
         # v1 format (plain names, no hashes) reads with empty hashes; blank
