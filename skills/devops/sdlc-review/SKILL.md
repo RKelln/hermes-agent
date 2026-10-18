@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.1.0
+version: 1.1.1
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -32,6 +32,7 @@ Do not use it for a separate downstream review card. A downstream card is ordina
 
 - A Kanban worker context with the current task and run identifiers.
 - Native Kanban tools: `kanban_show`, `kanban_comment`, `kanban_complete`, `kanban_request_changes`, and `kanban_block`.
+- A review run normally carries a narrowed tool surface — `kanban.review_toolsets`, default `file`, `skills`, `terminal`, `todo`, `web` — instead of the assignee profile's full set. If verification needs a surface it does not have (browser automation, code execution, delegation), record that as a blocker for a human instead of reaching for it.
 - Workspace access through `read_file`, `search_files`, and `terminal` when the deliverable is code.
 - The task's original specification, acceptance criteria, handoff summary, and prior run history must be available through `kanban_show`.
 

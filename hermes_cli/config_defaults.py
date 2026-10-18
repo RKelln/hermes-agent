@@ -15,6 +15,11 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 # Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
+#: Toolsets a review-lane run gets instead of the assignee profile's own. The reviewer stays on the
+#: ASSIGNEE profile on purpose: a separate `reviewer` profile carries its own cloned config and
+#: model pin, which then silently rots behind model changes. Only the tool surface narrows.
+#: An explicit empty list opts out and keeps the assignee profile's toolsets.
+DEFAULT_REVIEW_TOOLSETS = ["file", "skills", "terminal", "todo", "web"]
 
 
 def _aux(timeout, *, reasoning_effort=True, **extra):
@@ -1896,6 +1901,10 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Toolsets a review-lane run gets instead of the assignee profile's own. The reviewer keeps
+        # the assignee profile (and so its model) so it never drifts behind model changes; only the
+        # tool surface narrows. Explicit empty list = the profile's own toolsets.
+        "review_toolsets": list(DEFAULT_REVIEW_TOOLSETS),
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
