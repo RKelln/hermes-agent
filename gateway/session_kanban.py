@@ -11,6 +11,29 @@ import sqlite3
 from persistence.core.errors import AuthorityRefusal
 
 
+def review_toolsets(config):
+    """Toolsets a REVIEW-lane run gets instead of the assignee profile's own, or None to keep them.
+
+    A reviewer reads the tree and runs things (``file``, ``terminal``), is force-loaded with
+    ``sdlc-review`` (``skills``), needs ``todo``/``web``, and nothing else: browser automation, code
+    execution, computer use, delegation, cron, memory, session search, image/video generation and
+    analysis, speech and ``clarify`` are all surfaces a headless review run either cannot use or
+    must not reach (a worker that asks a question just hangs). The narrowing is CONFIG, not a
+    separate ``reviewer`` profile: a profile carries its own cloned config and model pin, so it
+    silently rots behind model changes. An explicit empty list opts out.
+    """
+    from hermes_cli.config_defaults import DEFAULT_REVIEW_TOOLSETS
+    raw = (config.get('kanban') or {}).get('review_toolsets')
+    if raw is None or not isinstance(raw, (list, tuple)):
+        # The owner's config comes from _load_gateway_config(), which does NOT merge DEFAULT_CONFIG,
+        # so an absent key is the NORMAL case for a profile that never set it: take the shipped
+        # NARROW set. A malformed value takes it too — a typo must never quietly restore every
+        # surface.
+        return list(DEFAULT_REVIEW_TOOLSETS)
+    names = [str(name).strip() for name in raw if str(name).strip()]
+    return names or None
+
+
 def build_kanban_policy(connection, params, config):
     from hermes_cli import kanban_db as kb
     from hermes_cli.profiles import resolve_profile_env
@@ -42,14 +65,15 @@ def build_kanban_policy(connection, params, config):
                 raise AuthorityRefusal('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
             skills = list(task.skills or ())
-            if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
+            review = kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review'
+            if review:
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
                 skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise AuthorityRefusal('invalid_kanban_claim') from exc
     cwd = task.workspace_path
     private = {}
-    policy = kanban_launch_policy(task, cwd, config, private)
+    policy = kanban_launch_policy(task, cwd, config, private, review=review)
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
         skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
@@ -62,13 +86,22 @@ def build_kanban_policy(connection, params, config):
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
 
 
-def kanban_launch_policy(task, cwd, config, private=None):
+def kanban_launch_policy(task, cwd, config, private=None, *, review=False):
     """The launch policy a claimed card runs, its model resolved by ``task_model`` (shared with the
     dispatcher's pre-spawn refusal). Refuses ``invalid_params`` (field ``model``) only when nothing
-    can name one, before a receipt or a worker exists."""
+    can name one, before a receipt or a worker exists.
+
+    ``review`` narrows the tool surface to the review lane's set (``kanban.review_toolsets``).
+    """
     from gateway.session_policy import build_policy
     from hermes_cli.kanban_worker_preflight import missing_model_detail, task_model
     params = {'source': 'cli', 'cwd': cwd}
+    if review:
+        narrowed = review_toolsets(config)
+        if narrowed:
+            # An explicit pick, so build_policy validates every name: a typo in the config fails the
+            # spawn loudly instead of silently widening (or half-narrowing) the reviewer's surface.
+            params['toolsets'] = narrowed
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):
         if value:
             params[name] = value
