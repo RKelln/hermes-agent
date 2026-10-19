@@ -1093,7 +1093,16 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
 
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
-    """Create a (child) task; orchestrator workers use this to fan out."""
+    """Create a (child) task; orchestrator workers use this to fan out.
+
+    A REVIEW run is refused inside ``kb.create_task`` (``assert_creation_allowed``). This
+    handler stamps ``creator_task_id`` AND ``creator_run_id`` from the run, so the kernel
+    reads the lane without this surface re-deriving it: one gate, inherited by every surface
+    that stamps provenance. The run id is the load-bearing half — after a reviewer delivers
+    its verdict the task's current run is cleared, so a gate that looked the task up instead
+    of the run would reopen the moment the verdict lands. The CLI has its own check because
+    ``hermes kanban swarm`` stamps nothing.
+    """
     _reject_delegated_child_mutation("kanban_create")
     title = _require_text(args, "title")
     assignee = args.get("assignee")
@@ -1140,6 +1149,9 @@ def _handle_create(args: dict, **kw) -> str:
             board=args.get("board"),
             project_source_task_id=project_source_task_id, triage=triage,
             creator_task_id=self_tid,
+            # Pin the lane to THIS run, not to the task's current run: a reviewer that has
+            # already delivered its verdict still owns the run id in its env.
+            creator_run_id=_worker_run_id(self_tid) if self_tid else None,
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,

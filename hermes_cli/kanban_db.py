@@ -1172,6 +1172,7 @@ def create_task(
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
+    creator_run_id: Optional[int] = None,
     completion_contract: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
@@ -1183,7 +1184,9 @@ def create_task(
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
-    dependency edges; an explicit ``session_id`` still wins.
+    dependency edges; an explicit ``session_id`` still wins. ``creator_run_id`` pins the
+    review-lane gate to the run that is creating, so a review run cannot disarm it by
+    delivering its verdict first (see ``assert_creation_allowed``).
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
@@ -1198,6 +1201,13 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if creator_task_id is not None:
+        # Every in-board create stamped with a creating run passes through here, so a
+        # surface that forgets its own lane check cannot open board state from review.
+        # The run id must come from the CREATING run: reading the task's current run would
+        # let a reviewer disarm the gate by delivering its verdict (which ends the run and
+        # clears ``current_run_id``) and then creating.
+        assert_creation_allowed(conn, creator_task_id, creator_run_id)
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
     # A project-scoped board anchors every new task to its project's repo
@@ -2251,6 +2261,54 @@ def _retry_status_for_run(
     event = _latest_event(conn, task_id, "claimed", run_id)
     payload = _json_dict(_row_get(event, "payload"))
     return "review" if payload.get("source_status") == "review" else "ready"
+
+
+#: What a refused create tells the caller to do instead. Ryan's standing rule (2026-09-18):
+#: reviewers never create tickets; they return a yes/no verdict and may SUGGEST issues for
+#: another agent or a human to ticket. The suggestion rides the verdict, so nothing is lost.
+REVIEW_RUN_CREATE_REFUSAL = (
+    "a review run cannot create tickets. A reviewer returns a verdict, it does not open board "
+    "state: put the suggestion in kanban_complete / kanban_request_changes / kanban_block "
+    "(summary, reason or metadata) so the implementer, an outcome-checker or a human can "
+    "ticket it."
+)
+
+
+def run_claimed_from_review(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
+) -> bool:
+    """True when ``task_id``'s run was claimed FROM the review column.
+
+    The same signal ``request_changes`` gates on (the run's ``claimed`` event carries
+    ``source_status=review``), so the two cannot disagree about what a reviewer is.
+    ``run_id=None`` reads the task's CURRENT run, which is only correct while that run is
+    open: after a verdict the task's current run is gone and this reads ``False``. Callers
+    that guard a process (``create_task``) must pass the run id they are acting as.
+    A task id from ANOTHER board has no row here and reads as ``False``, so a surface that
+    knows which board the worker is pinned to
+    (see ``hermes_cli/kanban.py::_review_run_create_refusal``) must check there.
+    """
+    return _retry_status_for_run(conn, task_id, run_id) == "review"
+
+
+def assert_creation_allowed(
+    conn: sqlite3.Connection, creator_task_id: str, run_id: Optional[int] = None,
+) -> None:
+    """Raise ``ValueError`` when ``creator_task_id``'s run was claimed from REVIEW.
+
+    The create path's kernel gate. Every surface that stamps provenance from the creating
+    run (the native ``kanban_create`` tool, ``hermes kanban create``) passes through
+    ``create_task`` with ``creator_task_id``, so the lane is read here once rather than
+    re-derived per surface. ``ValueError`` because the tool surface already renders that
+    class as a validation failure; a CLI caller pre-checks for a one-line message.
+
+    ``run_id`` should be the creating process's own run. ``None`` falls back to the task's
+    current run, which is correct only while that run is open — a review run that has
+    already handed off its verdict has no current run, so a caller holding the run id must
+    pass it or the gate silently reopens.
+    """
+    if run_claimed_from_review(conn, creator_task_id, run_id):
+        raise ValueError(REVIEW_RUN_CREATE_REFUSAL)
 
 
 # Run outcome -> lifecycle status a goal loop should report for a handed-off run.

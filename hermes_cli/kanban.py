@@ -335,6 +335,9 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    refusal = _review_run_create_refusal()
+    if refusal:
+        return _err(f"kanban create: {refusal}")
     body = args.body
     body_file = getattr(args, "body_file", None)
     if body is not None and body_file is not None:
@@ -360,6 +363,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    creator_tid = (os.environ.get("HERMES_KANBAN_TASK")
+                   if is_dispatcher_owned_worker_context() else None)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -375,8 +380,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
+            creator_task_id=creator_tid,
+            # Same reason as the native tool: the run id outlives the verdict, the task's
+            # current run does not.
+            creator_run_id=_own_run_id() if creator_tid else None,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -393,6 +400,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
 
 
 def _cmd_swarm(args: argparse.Namespace) -> int:
+    refusal = _review_run_create_refusal()
+    if refusal:
+        return _err(f"kanban swarm: {refusal}")
     try:
         workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
     except ValueError as exc:
@@ -823,6 +833,45 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _own_run_id() -> Optional[int]:
+    """This process's dispatcher run id, even after it is no longer the task's current run."""
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _review_run_create_refusal() -> Optional[str]:
+    """Refusal text when THIS process is a review run, else ``None``.
+
+    A reviewer consumes a board and must not open board state. ``hermes kanban create``
+    already inherits the kernel gate (it stamps ``creator_task_id``); the check is here so
+    the CLI reports a one-line refusal instead of a ValueError, and because
+    ``hermes kanban swarm`` stamps NO creator and would otherwise build five cards.
+
+    Which shells reach it: the worker PROCESS itself, whose env carries
+    ``HERMES_KANBAN_TASK``/``HERMES_KANBAN_RUN_ID``. A worker's terminal children do not —
+    ``agent.delegation_context.scrub_kanban_env`` strips that identity and stamps
+    ``HERMES_DELEGATED_CHILD_CONTEXT``, so ``kanban_command``'s delegate fence refuses
+    ``create``/``swarm`` before any handler runs, and this check never fires there. It is
+    the gate for the paths that keep the worker env without the marker (an in-process
+    ``execute_code`` subprocess shelling out), which is why it is not dead code.
+
+    Read off the board the worker is pinned to (``HERMES_KANBAN_DB``), so the lane cannot
+    be dodged with a board flag.
+    """
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id or not is_dispatcher_owned_worker_context():
+        return None
+    with kbc.connect_closing() as conn:
+        if kb.run_claimed_from_review(conn, task_id, _worker_run_id_for(task_id)):
+            return kb.REVIEW_RUN_CREATE_REFUSAL
+    return None
 
 
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
