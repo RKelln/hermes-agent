@@ -1,7 +1,7 @@
 ---
 name: sdlc-review
 description: Review Kanban handoffs and route verified outcomes.
-version: 1.1.1
+version: 1.1.3
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -33,6 +33,7 @@ Do not use it for a separate downstream review card. A downstream card is ordina
 - A Kanban worker context with the current task and run identifiers.
 - Native Kanban tools: `kanban_show`, `kanban_comment`, `kanban_complete`, `kanban_request_changes`, and `kanban_block`.
 - A review run normally carries a narrowed tool surface — `kanban.review_toolsets`, default `file`, `skills`, `terminal`, `todo`, `web` — instead of the assignee profile's full set. If verification needs a surface it does not have (browser automation, code execution, delegation), record that as a blocker for a human instead of reaching for it.
+- A review run **cannot create tickets**. `kanban_create` is refused by the kernel for the whole life of the run, including after the verdict (the refusal is keyed on the run's `claimed` event `source_status=review`, not on the task's current run). A worker's shell cannot reach the CLI either: `hermes kanban create` and `hermes kanban swarm` are refused there because a worker's terminal is a delegate context, and the CLI carries the same lane check for any path that keeps worker identity. Put the suggestion in the verdict: the `kanban_comment` plus the `kanban_request_changes` reason, or the `kanban_complete` summary. The implementer, an outcome-checker or a human decides whether it becomes a card.
 - Workspace access through `read_file`, `search_files`, and `terminal` when the deliverable is code.
 - The task's original specification, acceptance criteria, handoff summary, and prior run history must be available through `kanban_show`.
 
