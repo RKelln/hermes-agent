@@ -686,9 +686,51 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _exclude_worktrees_dir(repo_root: Path) -> None:
+    """Hide a repo-root ``.worktrees/`` from ``git status`` via ``info/exclude``.
+
+    ``worktree_ops._ensure_worktrees_gitignored`` appends to the TRACKED
+    ``.gitignore``, which turns ``?? .worktrees/`` into `` M .gitignore`` — just
+    as dirty, and still refused by anything gated on a clean tree (a deploy
+    script, a release check, ``deploy/upgrade.py``). The repository-local
+    exclude file is untracked, is honoured from the main checkout and every
+    linked worktree alike, and cannot be committed by accident.
+
+    Fail-soft on purpose: an unignored worktree must never fail a claim, and a
+    repo whose git is too old for ``--path-format`` simply keeps the old
+    behaviour.
+    """
+    result = _git(
+        repo_root, "rev-parse", "--path-format=absolute", "--git-path",
+        "info/exclude", timeout=10,
+    )
+    if result.returncode != 0:
+        return
+    exclude = Path((result.stdout or "").strip())
+    if not exclude.name:
+        return
+    try:
+        existing = (
+            exclude.read_text(encoding="utf-8-sig", errors="replace")
+            if exclude.exists() else ""
+        )
+        if ".worktrees/" in existing.splitlines():
+            return
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        with open(exclude, "a", encoding="utf-8") as handle:
+            if existing and not existing.endswith("\n"):
+                handle.write("\n")
+            handle.write(".worktrees/\n")
+    except Exception:  # noqa: BLE001 - fail-soft by contract
+        pass
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
+    # Before the early return: a reused tree from an earlier run may have
+    # "claimed" this repo while nothing excluded .worktrees/.
+    _exclude_worktrees_dir(repo_root)
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
         return
